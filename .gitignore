@@ -79,3 +79,8 @@ id_dsa*
 *k3s.yaml
 k3s.yaml
 kubeconfig
+oracle-k3s.yaml
+
+# Local image export tarballs
+*.tar
+aegis-brain-phase3.tar
