@@ -92,3 +92,57 @@ class AuditLogRecord(Base):
             "forensics_file": self.forensics_file,
             "health_verified": self.health_verified
         }
+
+
+class RestartEventRecord(Base):
+    """Sliding-window restart timestamps for guardrail rate limiting (survives process restart)."""
+    __tablename__ = "restart_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    target_pod = Column(String(128), index=True, nullable=False)
+    recorded_at = Column(Float, index=True, nullable=False)
+    created_at = Column(String(32), default=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "target_pod": self.target_pod,
+            "recorded_at": self.recorded_at,
+            "created_at": self.created_at,
+        }
+
+
+class GuardrailDecisionRecord(Base):
+    """Persisted guardrail audit trail for every validate_verdict decision."""
+    __tablename__ = "guardrail_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(String(32), default=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    approved = Column(Boolean, default=False)
+    final_action = Column(String(64), nullable=False)
+    original_action = Column(String(64), nullable=False)
+    target_pod = Column(String(128), index=True, nullable=False)
+    problem_type = Column(String(64), nullable=False)
+    state = Column(String(64), nullable=False)
+    reason = Column(Text, nullable=True)
+    confidence = Column(Float, default=0.0)
+    mitre_technique = Column(String(64), nullable=True)
+    rate_limit_exceeded = Column(Boolean, default=False)
+    schema_valid = Column(Boolean, default=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "timestamp": self.timestamp,
+            "approved": self.approved,
+            "final_action": self.final_action,
+            "original_action": self.original_action,
+            "target_pod": self.target_pod,
+            "problem_type": self.problem_type,
+            "state": self.state,
+            "reason": self.reason,
+            "confidence": self.confidence,
+            "mitre_technique": self.mitre_technique,
+            "rate_limit_exceeded": self.rate_limit_exceeded,
+            "schema_valid": self.schema_valid,
+        }
