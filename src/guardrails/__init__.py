@@ -5,6 +5,10 @@ from src.guardrails.action_schema import (
     STATE_GUARDRAIL_APPROVED,
     STATE_ACTION_REJECTED,
     STATE_ESCALATE_HUMAN,
+    LLMVerdictSchema,
+    ControllerDecisionSchema,
+    validate_llm_verdict,
+    validate_controller_decision,
 )
 from src.guardrails.validator import GuardrailEngine
 
@@ -16,4 +20,8 @@ __all__ = [
     "STATE_GUARDRAIL_APPROVED",
     "STATE_ACTION_REJECTED",
     "STATE_ESCALATE_HUMAN",
+    "LLMVerdictSchema",
+    "ControllerDecisionSchema",
+    "validate_llm_verdict",
+    "validate_controller_decision",
 ]

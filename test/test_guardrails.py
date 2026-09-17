@@ -1,32 +1,61 @@
 import sys
 import os
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.db.database import configure_database
 from src.guardrails import (
     GuardrailEngine,
     STATE_GUARDRAIL_APPROVED,
     STATE_ACTION_REJECTED,
     STATE_ESCALATE_HUMAN,
+    validate_controller_decision,
 )
 
 
 class TestGuardrailEngine(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        cls._db_path = os.path.join(cls._tmpdir.name, "guardrails_test.db")
+        configure_database(f"sqlite:///{cls._db_path}")
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            from src.db.database import engine
+
+            engine.dispose()
+        except Exception:
+            pass
+        cls._tmpdir.cleanup()
+
     def setUp(self):
-        self.engine = GuardrailEngine(min_confidence_threshold=0.70, max_restarts_per_hour=3)
+        from src.db.database import SessionLocal
+
+        self.engine = GuardrailEngine(
+            min_confidence_threshold=0.70,
+            max_restarts_per_hour=3,
+            session_factory=SessionLocal,
+            persist=True,
+            also_jsonl=False,
+        )
+        self.engine.reset_rate_limits()
 
     def test_approve_valid_operational_bug(self):
         verdict = {
             "target_pod": "checkout-service-prod",
             "problem_type": "OPERATIONAL_BUG",
             "recommended_action": "RESTART_POD",
-            "confidence": 0.85
+            "confidence": 0.85,
         }
         decision = self.engine.validate_verdict(verdict)
         self.assertTrue(decision.approved)
         self.assertEqual(decision.final_action, "RESTART_POD")
         self.assertEqual(decision.state, STATE_GUARDRAIL_APPROVED)
+        self.assertTrue(decision.schema_valid)
 
     def test_approve_valid_security_attack(self):
         verdict = {
@@ -34,7 +63,7 @@ class TestGuardrailEngine(unittest.TestCase):
             "problem_type": "SECURITY_ATTACK",
             "recommended_action": "CILIUM_QUARANTINE_EBPF",
             "confidence": 0.92,
-            "mitre_technique": "T1059"
+            "mitre_technique": "T1059",
         }
         decision = self.engine.validate_verdict(verdict)
         self.assertTrue(decision.approved)
@@ -46,7 +75,7 @@ class TestGuardrailEngine(unittest.TestCase):
             "target_pod": "database-pod",
             "problem_type": "OPERATIONAL_BUG",
             "recommended_action": "DELETE_NAMESPACE",
-            "confidence": 0.99
+            "confidence": 0.99,
         }
         decision = self.engine.validate_verdict(verdict)
         self.assertFalse(decision.approved)
@@ -59,7 +88,7 @@ class TestGuardrailEngine(unittest.TestCase):
             "target_pod": "frontend-service",
             "problem_type": "UNKNOWN",
             "recommended_action": "RESTART_POD",
-            "confidence": 0.45
+            "confidence": 0.45,
         }
         decision = self.engine.validate_verdict(verdict)
         self.assertFalse(decision.approved)
@@ -72,14 +101,12 @@ class TestGuardrailEngine(unittest.TestCase):
             "target_pod": "flaky-service",
             "problem_type": "OPERATIONAL_BUG",
             "recommended_action": "RESTART_POD",
-            "confidence": 0.88
+            "confidence": 0.88,
         }
-        # First 3 restarts should be approved
         for i in range(3):
             d = self.engine.validate_verdict(verdict)
             self.assertTrue(d.approved, f"Restart #{i+1} should be approved")
 
-        # 4th restart within 1 hour should be rejected by rate limiter
         d4 = self.engine.validate_verdict(verdict)
         self.assertFalse(d4.approved)
         self.assertEqual(d4.final_action, "ESCALATE")
@@ -87,18 +114,91 @@ class TestGuardrailEngine(unittest.TestCase):
         self.assertTrue(d4.rate_limit_exceeded)
         self.assertIn("exceeded restart frequency cap", d4.reason)
 
+    def test_rate_limit_survives_process_restart(self):
+        """DB-backed restart history must survive a new GuardrailEngine instance."""
+        from src.db.database import SessionLocal
+        from src.db.models import GuardrailDecisionRecord
+
+        pod = "persistent-flaky-pod"
+        verdict = {
+            "target_pod": pod,
+            "problem_type": "OPERATIONAL_BUG",
+            "recommended_action": "RESTART_POD",
+            "confidence": 0.90,
+        }
+        for _ in range(3):
+            self.assertTrue(self.engine.validate_verdict(verdict).approved)
+
+        # Simulate process restart: new engine, same DB
+        engine2 = GuardrailEngine(
+            min_confidence_threshold=0.70,
+            max_restarts_per_hour=3,
+            session_factory=SessionLocal,
+            persist=True,
+            also_jsonl=False,
+        )
+        d4 = engine2.validate_verdict(verdict)
+        self.assertFalse(d4.approved)
+        self.assertTrue(d4.rate_limit_exceeded)
+
+        with SessionLocal() as session:
+            audits = (
+                session.query(GuardrailDecisionRecord)
+                .filter(GuardrailDecisionRecord.target_pod == pod)
+                .all()
+            )
+            self.assertGreaterEqual(len(audits), 4)
+
+    def test_schema_validation_rejects_missing_fields(self):
+        decision = self.engine.validate_verdict({"confidence": 0.99})
+        self.assertFalse(decision.approved)
+        self.assertFalse(decision.schema_valid)
+        self.assertEqual(decision.state, STATE_ACTION_REJECTED)
+        self.assertIn("schema validation", decision.reason.lower())
+
+    def test_controller_schema_before_execute(self):
+        ok, err = validate_controller_decision(
+            {
+                "approved": True,
+                "final_action": "RESTART_POD",
+                "state": STATE_GUARDRAIL_APPROVED,
+                "reason": "ok",
+                "confidence": 0.9,
+                "original_action": "RESTART_POD",
+                "target_pod": "x",
+                "problem_type": "OPERATIONAL_BUG",
+            }
+        )
+        self.assertIsNotNone(ok)
+        self.assertIsNone(err)
+
+        bad, err2 = validate_controller_decision(
+            {
+                "approved": True,
+                "final_action": "DELETE_NAMESPACE",
+                "state": STATE_GUARDRAIL_APPROVED,
+                "reason": "bad",
+                "confidence": 0.9,
+                "original_action": "DELETE_NAMESPACE",
+                "target_pod": "x",
+                "problem_type": "OPERATIONAL_BUG",
+            }
+        )
+        self.assertIsNone(bad)
+        self.assertIn("ALLOWED_ACTIONS", err2)
+
     def test_security_attack_restart_override(self):
         verdict = {
             "target_pod": "compromised-pod",
             "problem_type": "SECURITY_ATTACK",
-            "recommended_action": "RESTART_POD",  # Bad recommendation under attack
-            "confidence": 0.88
+            "recommended_action": "RESTART_POD",
+            "confidence": 0.88,
         }
         decision = self.engine.validate_verdict(verdict)
         self.assertTrue(decision.approved)
-        # Should override RESTART_POD with CILIUM_QUARANTINE_EBPF
         self.assertEqual(decision.final_action, "CILIUM_QUARANTINE_EBPF")
         self.assertIn("Overrode RESTART_POD", decision.reason)
+
 
 if __name__ == "__main__":
     unittest.main()
