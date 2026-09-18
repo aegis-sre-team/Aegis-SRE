@@ -1,9 +1,9 @@
 import logging
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
-from src.guardrails.action_schema import GuardrailDecision
+from src.guardrails.action_schema import GuardrailDecision, validate_controller_decision
 from src.controller.executor import ActionExecutor, ActionExecutionResult
 
 logger = logging.getLogger("aegis-controller-api")
@@ -45,19 +45,25 @@ async def controller_health():
 async def execute_guardrail_decision(req: DecisionExecutionRequest):
     """
     Receives validated GuardrailDecision payload and dispatches cluster action execution.
+    Schema validation runs before any controller mutation.
     """
+    parsed, err = validate_controller_decision(req.model_dump())
+    if err or parsed is None:
+        logger.warning("CONTROLLER REJECT: schema validation failed — %s", err)
+        raise HTTPException(status_code=400, detail=err or "Invalid decision schema")
+
     try:
         decision = GuardrailDecision(
-            approved=req.approved,
-            final_action=req.final_action,
-            state=req.state,
-            reason=req.reason,
-            confidence=req.confidence,
-            original_action=req.original_action,
-            target_pod=req.target_pod,
-            problem_type=req.problem_type,
-            mitre_technique=req.mitre_technique,
-            rate_limit_exceeded=req.rate_limit_exceeded
+            approved=parsed.approved,
+            final_action=parsed.final_action,
+            state=parsed.state,
+            reason=parsed.reason,
+            confidence=parsed.confidence,
+            original_action=parsed.original_action,
+            target_pod=parsed.target_pod,
+            problem_type=parsed.problem_type,
+            mitre_technique=parsed.mitre_technique,
+            rate_limit_exceeded=parsed.rate_limit_exceeded,
         )
 
         result: ActionExecutionResult = executor.execute_decision(decision)
