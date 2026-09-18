@@ -1,156 +1,282 @@
-import requests
 import logging
 import os
+from typing import Any, Dict, List, Optional
+
+import requests
 
 logger = logging.getLogger("aegis-brain-collector")
 
+
+class SensorDarkError(Exception):
+    """Raised when a required telemetry sensor is unreachable or returns unusable data."""
+
+    def __init__(self, sensor: str, detail: str):
+        self.sensor = sensor
+        self.detail = detail
+        super().__init__(f"{sensor} dark: {detail}")
+
+
 class TelemetryCollector:
     """
-    Connects to Prometheus, Loki, and Falco container endpoints
-    to gather live telemetry evidence for AI diagnosis.
+    Honest telemetry collector for Phase 3.
+    Fail closed: never invent healthy metrics / fake Falco events when sensors are dark.
     """
-    def __init__(self,
-                 prometheus_url: str = None,
-                 loki_url: str = None):
-        self.prometheus_url = prometheus_url or os.getenv("PROMETHEUS_URL", "http://localhost:9090")
-        self.loki_url = loki_url or os.getenv("LOKI_URL", "http://localhost:3100")
+
+    def __init__(
+        self,
+        prometheus_url: str = None,
+        loki_url: str = None,
+        request_timeout: float = None,
+    ):
+        self.prometheus_url = (prometheus_url or os.getenv("PROMETHEUS_URL", "http://localhost:9090")).rstrip("/")
+        self.loki_url = (loki_url or os.getenv("LOKI_URL", "http://localhost:3100")).rstrip("/")
+        timeout = request_timeout or float(os.getenv("AEGIS_SENSOR_TIMEOUT", "3.0"))
+        self.timeout = (min(1.0, timeout), timeout)
+        self._sensor_health: Dict[str, Dict[str, Any]] = {
+            "prometheus": {"ok": False, "detail": "not_checked"},
+            "loki": {"ok": False, "detail": "not_checked"},
+            "falco_via_loki": {"ok": False, "detail": "not_checked"},
+        }
+
+    @property
+    def sensor_health(self) -> Dict[str, Dict[str, Any]]:
+        return dict(self._sensor_health)
+
+    def _mark(self, sensor: str, ok: bool, detail: str) -> None:
+        self._sensor_health[sensor] = {"ok": ok, "detail": detail}
+
+    def check_sensors(self) -> Dict[str, Dict[str, Any]]:
+        """Probe Prometheus + Loki readiness. Updates sensor_health."""
+        try:
+            resp = requests.get(f"{self.prometheus_url}/-/ready", timeout=self.timeout)
+            if resp.status_code == 200:
+                self._mark("prometheus", True, "ready")
+            else:
+                self._mark("prometheus", False, f"HTTP {resp.status_code}")
+        except Exception as e:
+            self._mark("prometheus", False, str(e))
+
+        try:
+            resp = requests.get(f"{self.loki_url}/ready", timeout=self.timeout)
+            if resp.status_code == 200:
+                self._mark("loki", True, "ready")
+            else:
+                # Loki sometimes returns 503 briefly while ready endpoint exists
+                resp2 = requests.get(f"{self.loki_url}/loki/api/v1/labels", timeout=self.timeout)
+                if resp2.status_code == 200:
+                    self._mark("loki", True, "labels_ok")
+                else:
+                    self._mark("loki", False, f"HTTP {resp.status_code}")
+        except Exception as e:
+            self._mark("loki", False, str(e))
+
+        # Falco path: Loki stream {app="falco"} must be queryable (may be empty)
+        if self._sensor_health["loki"]["ok"]:
+            try:
+                resp = requests.get(
+                    f"{self.loki_url}/loki/api/v1/query_range",
+                    params={"query": '{app="falco"}', "limit": 1},
+                    timeout=self.timeout,
+                )
+                if resp.status_code == 200:
+                    self._mark("falco_via_loki", True, "queryable")
+                else:
+                    self._mark("falco_via_loki", False, f"HTTP {resp.status_code}")
+            except Exception as e:
+                self._mark("falco_via_loki", False, str(e))
+        else:
+            self._mark("falco_via_loki", False, "loki_dark")
+
+        return self.sensor_health
+
+    def any_critical_dark(self) -> bool:
+        """Prometheus or Loki down => cannot diagnose honestly."""
+        h = self.sensor_health
+        return not (h.get("prometheus", {}).get("ok") and h.get("loki", {}).get("ok"))
+
+    def _prom_query(self, query: str) -> Optional[List[dict]]:
+        resp = requests.get(
+            f"{self.prometheus_url}/api/v1/query",
+            params={"query": query},
+            timeout=self.timeout,
+        )
+        if resp.status_code != 200:
+            raise SensorDarkError("prometheus", f"query HTTP {resp.status_code}: {query[:80]}")
+        payload = resp.json()
+        if payload.get("status") != "success":
+            raise SensorDarkError("prometheus", f"query status={payload.get('status')}")
+        return payload.get("data", {}).get("result", [])
 
     def fetch_prometheus_metrics(self, pod_name: str) -> dict:
-        """Queries Prometheus for total requests, error rates, and memory usage dynamically."""
+        """
+        Query live cAdvisor-backed metrics for the target pod.
+        Returns zeros only when the sensor answered and series are empty — never fake healthy baselines.
+        Raises SensorDarkError when Prometheus is unreachable.
+        """
         metrics_data = {
             "total_requests": 0,
             "error_500_count": 0,
-            "avg_latency_ms": 12.5,
-            "memory_mb": 142.0,
-            "cpu_usage_pct": 24.5
+            "avg_latency_ms": 0.0,
+            "memory_mb": 0.0,
+            "memory_limit_mb": 0.0,
+            "memory_pct": 0.0,
+            "cpu_usage_pct": 0.0,
+            "sensor_ok": False,
+            "source": "prometheus+cadvisor",
         }
+
         try:
-            # Query Total Requests for target pod or cluster aggregate
-            q_total = f'sum(http_requests_total{{pod=~".*{pod_name}.*"}})' if pod_name else "sum(http_requests_total)"
-            resp = requests.get(f"{self.prometheus_url}/api/v1/query", params={"query": q_total}, timeout=(0.3, 1.5))
-            if resp.status_code == 200:
-                results = resp.json().get("data", {}).get("result", [])
-                if results:
-                    metrics_data["total_requests"] = int(float(results[0]["value"][1]))
-                elif pod_name:
-                    # Fallback to general cluster counter if pod label not populated
-                    resp_gen = requests.get(f"{self.prometheus_url}/api/v1/query", params={"query": "sum(http_requests_total)"}, timeout=(0.3, 1.5))
-                    if resp_gen.status_code == 200:
-                        gen_res = resp_gen.json().get("data", {}).get("result", [])
-                        if gen_res:
-                            metrics_data["total_requests"] = int(float(gen_res[0]["value"][1]))
+            # Prefer cAdvisor CPU ratio vs limit (Boutique /metrics often broken gRPC)
+            cpu_q = (
+                f'(sum(rate(container_cpu_usage_seconds_total{{pod=~".*{pod_name}.*",container!="",container!="POD"}}[1m])) '
+                f'/ sum(container_spec_cpu_quota{{pod=~".*{pod_name}.*",container!="",container!="POD"}} '
+                f'/ container_spec_cpu_period{{pod=~".*{pod_name}.*",container!="",container!="POD"}})) * 100'
+            )
+            cpu_res = self._prom_query(cpu_q)
+            if cpu_res:
+                metrics_data["cpu_usage_pct"] = round(float(cpu_res[0]["value"][1]), 1)
 
-            # Query 500 Errors
-            q_err = f'sum(http_requests_total{{pod=~".*{pod_name}.*",status="500"}})' if pod_name else 'sum(http_requests_total{status="500"})'
-            resp_err = requests.get(f"{self.prometheus_url}/api/v1/query", params={"query": q_err}, timeout=(0.3, 1.5))
-            if resp_err.status_code == 200:
-                err_results = resp_err.json().get("data", {}).get("result", [])
-                if err_results:
-                    metrics_data["error_500_count"] = int(float(err_results[0]["value"][1]))
-                elif pod_name:
-                    resp_err_gen = requests.get(f"{self.prometheus_url}/api/v1/query", params={"query": 'sum(http_requests_total{status="500"})'}, timeout=(0.3, 1.5))
-                    if resp_err_gen.status_code == 200:
-                        gen_err = resp_err_gen.json().get("data", {}).get("result", [])
-                        if gen_err:
-                            metrics_data["error_500_count"] = int(float(gen_err[0]["value"][1]))
+            mem_q = f'sum(container_memory_working_set_bytes{{pod=~".*{pod_name}.*",container!="",container!="POD"}})/1024/1024'
+            mem_res = self._prom_query(mem_q)
+            if mem_res:
+                metrics_data["memory_mb"] = round(float(mem_res[0]["value"][1]), 1)
 
-            # Query CPU and Memory if cAdvisor/Kubernetes metrics available
+            lim_q = f'sum(container_spec_memory_limit_bytes{{pod=~".*{pod_name}.*",container!="",container!="POD"}})/1024/1024'
+            lim_res = self._prom_query(lim_q)
+            if lim_res:
+                lim = float(lim_res[0]["value"][1])
+                # Ignore absurdly large "unlimited" specs
+                if 0 < lim < 1_000_000:
+                    metrics_data["memory_limit_mb"] = round(lim, 1)
+                    if lim > 0:
+                        metrics_data["memory_pct"] = round(
+                            (metrics_data["memory_mb"] / lim) * 100.0, 1
+                        )
+
+            # Optional HTTP counters if present (Boutique rarely exposes them)
             try:
-                resp_mem = requests.get(f"{self.prometheus_url}/api/v1/query", params={"query": f'sum(container_memory_working_set_bytes{{pod=~".*{pod_name}.*"}})/1024/1024'}, timeout=(0.3, 1.5))
-                if resp_mem.status_code == 200:
-                    mem_res = resp_mem.json().get("data", {}).get("result", [])
-                    if mem_res:
-                        metrics_data["memory_mb"] = round(float(mem_res[0]["value"][1]), 1)
-            except Exception:
+                req_res = self._prom_query(f'sum(http_requests_total{{pod=~".*{pod_name}.*"}})')
+                if req_res:
+                    metrics_data["total_requests"] = int(float(req_res[0]["value"][1]))
+                err_res = self._prom_query(
+                    f'sum(http_requests_total{{pod=~".*{pod_name}.*",status=~"5.."}})'
+                )
+                if err_res:
+                    metrics_data["error_500_count"] = int(float(err_res[0]["value"][1]))
+            except SensorDarkError:
                 pass
+
+            metrics_data["sensor_ok"] = True
+            self._mark("prometheus", True, "query_ok")
+        except SensorDarkError as e:
+            self._mark("prometheus", False, e.detail)
+            raise
         except Exception as e:
-            logger.warning(f"Prometheus query fallback: {e}")
-            
+            self._mark("prometheus", False, str(e))
+            raise SensorDarkError("prometheus", str(e)) from e
+
         return metrics_data
 
-    def fetch_loki_logs(self, pod_name: str, limit: int = 15) -> list:
-        """Queries Loki API for recent log entries for a target pod."""
-        logs = []
-        app_label = pod_name.split("-")[0] if "-" in pod_name else pod_name
+    def fetch_loki_logs(self, pod_name: str, limit: int = 15) -> List[str]:
+        """
+        Query Loki for recent pod logs. Empty list is honest (no lines).
+        Raises SensorDarkError when Loki is unreachable.
+        Avoids overly broad app=~ prefixes (e.g. 'chaos' matching all chaos pods).
+        """
+        logs: List[str] = []
+        query_url = f"{self.loki_url}/loki/api/v1/query_range"
+
+        # Prefer exact-ish pod match; optional app label only if pod name looks like a
+        # deployment prefix with hash (app = first label segment only when long enough
+        # and not a shared namespace prefix like "chaos").
+        queries = [f'{{pod=~".*{pod_name}.*"}}']
+        parts = pod_name.split("-") if pod_name else []
+        if len(parts) >= 2:
+            # Online Boutique style: frontend-xxxxx -> app=frontend
+            # Skip shared prefixes used by many workloads in aegis-chaos.
+            app_label = parts[0]
+            if app_label not in {"chaos", "aegis"} and len(app_label) >= 4:
+                queries.append(f'{{app="{app_label}"}}')
+
         try:
-            query_url = f"{self.loki_url}/loki/api/v1/query_range"
-            # Try pod-level query first, then app-level query
-            params = {
-                "query": f'{{pod=~".*{pod_name}.*"}}',
-                "limit": limit
-            }
-            resp = requests.get(query_url, params=params, timeout=(0.3, 1.5))
-            if resp.status_code == 200:
+            for query in queries:
+                resp = requests.get(
+                    query_url,
+                    params={"query": query, "limit": limit},
+                    timeout=self.timeout,
+                )
+                if resp.status_code != 200:
+                    raise SensorDarkError("loki", f"HTTP {resp.status_code} for {query}")
                 streams = resp.json().get("data", {}).get("result", [])
                 for stream in streams:
                     for entry in stream.get("values", []):
                         logs.append(entry[1])
+                if logs:
+                    break
 
-            if not logs:
-                params = {
-                    "query": f'{{app=~".*{app_label}.*"}}',
-                    "limit": limit
-                }
-                resp = requests.get(query_url, params=params, timeout=(0.3, 1.5))
-                if resp.status_code == 200:
-                    streams = resp.json().get("data", {}).get("result", [])
-                    for stream in streams:
-                        for entry in stream.get("values", []):
-                            logs.append(entry[1])
+            self._mark("loki", True, "query_ok")
+        except SensorDarkError:
+            raise
         except Exception as e:
-            logger.warning(f"Loki fetch fallback: {e}")
-            
-        if not logs:
-            logs = [
-                f"[INFO] Aegis storefront processing requests normally",
-                f"[ERROR] Database connection failure triggered on /api/v1/error"
-            ]
+            self._mark("loki", False, str(e))
+            raise SensorDarkError("loki", str(e)) from e
+
         return logs
 
-    def fetch_falco_alerts(self, pod_name: str) -> list:
-        """Scans recent Falco security alerts for eBPF kernel events from Loki or local audit logs."""
-        falco_alerts = []
+    def fetch_falco_alerts(
+        self,
+        pod_name: str,
+        limit: int = 25,
+        security_context: bool = False,
+    ) -> List[str]:
+        """
+        Query Loki stream {{app="falco"}} for security events.
+        Does NOT fabricate T1059 bait when empty.
 
-        # 1. Query Loki for Falco syslog / JSON events
+        Matching rules (K3s Falco often lacks k8s.pod.name):
+        - Always include lines that mention pod_name.
+        - If security_context=True (shell/Falco alert path), also include
+          SECURITY_ALERT / T1059 / T1552 / shell-spawn lines.
+        - If security_context=False (BUG path), do NOT attach unrelated
+          cluster-wide shell noise to OOM/CPU incidents.
+        """
+        falco_alerts: List[str] = []
+        query_url = f"{self.loki_url}/loki/api/v1/query_range"
+
         try:
-            query_url = f"{self.loki_url}/loki/api/v1/query_range"
-            params = {
-                "query": '{app="falco"}',
-                "limit": 10
-            }
-            resp = requests.get(query_url, params=params, timeout=(0.3, 1.5))
-            if resp.status_code == 200:
-                streams = resp.json().get("data", {}).get("result", [])
-                for stream in streams:
-                    for entry in stream.get("values", []):
-                        log_msg = entry[1]
-                        if pod_name in log_msg or "shell" in log_msg.lower() or "t1059" in log_msg.lower():
-                            falco_alerts.append(log_msg)
+            resp = requests.get(
+                query_url,
+                params={"query": '{app="falco"}', "limit": limit},
+                timeout=self.timeout,
+            )
+            if resp.status_code != 200:
+                raise SensorDarkError("falco_via_loki", f"HTTP {resp.status_code}")
+
+            streams = resp.json().get("data", {}).get("result", [])
+            pod_token = (pod_name or "").lower()
+            security_markers = (
+                "security_alert",
+                "t1059",
+                "t1552",
+                "shell spawned",
+                "sensitive file read",
+            )
+            for stream in streams:
+                for entry in stream.get("values", []):
+                    log_msg = entry[1]
+                    lower = log_msg.lower()
+                    pod_hit = bool(pod_token) and pod_token in lower
+                    security_hit = any(m in lower for m in security_markers)
+                    if pod_hit:
+                        falco_alerts.append(log_msg)
+                    elif security_context and security_hit:
+                        falco_alerts.append(log_msg)
+
+            self._mark("falco_via_loki", True, f"events={len(falco_alerts)}")
+        except SensorDarkError:
+            raise
         except Exception as e:
-            logger.debug(f"Loki Falco query fallback: {e}")
-
-        # 2. Check local Falco event logs if Loki returned empty
-        if not falco_alerts:
-            local_falco_paths = [
-                "logs/falco_events.jsonl",
-                "test/falco/falco_events.json",
-                "logs/falco_audit.jsonl"
-            ]
-            for path in local_falco_paths:
-                if os.path.exists(path):
-                    try:
-                        with open(path, "r", encoding="utf-8") as f:
-                            for line in f:
-                                if line.strip():
-                                    falco_alerts.append(line.strip())
-                    except Exception:
-                        pass
-
-        # 3. Format structured security event if triggered by Falco threat scenario
-        if not falco_alerts and ("shell" in pod_name.lower() or "falco" in pod_name.lower() or "attack" in pod_name.lower()):
-            falco_alerts = [
-                f"[SECURITY_ALERT] Falco eBPF: Notice Shell spawned in container (user=root pod={pod_name} cmd=/bin/sh) MITRE:T1059",
-                f"[SECURITY_ALERT] Falco eBPF: Warning Sensitive file read (file=/etc/shadow pod={pod_name}) MITRE:T1552"
-            ]
+            self._mark("falco_via_loki", False, str(e))
+            raise SensorDarkError("falco_via_loki", str(e)) from e
 
         return falco_alerts

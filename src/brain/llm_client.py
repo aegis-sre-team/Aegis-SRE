@@ -54,6 +54,7 @@ class LLMClient:
                 if start_idx != -1 and end_idx != -1:
                     raw_json = raw_json[start_idx:end_idx+1]
                 verdict = json.loads(raw_json)
+                verdict.setdefault("confidence", 0.85)
                 verdict["_ai_provider"] = f"Ollama ({target_model})"
                 self._persist_incident_db(verdict)
                 return verdict
@@ -140,7 +141,19 @@ class LLMClient:
         # Inspect evidence section only (before RAG reference runbooks)
         evidence_section = user_prompt.split("[RETRIEVED RAG RUNBOOKS]")[0].lower() if "[RETRIEVED RAG RUNBOOKS]" in user_prompt else user_prompt.lower()
 
-        if "falco_shell_spawn" in evidence_section or "t1059" in evidence_section or "t1552" in evidence_section or "security_attack" in evidence_section:
+        # Prefer explicit alert_type line so BUG alerts are not overridden by residual wording
+        alert_line = ""
+        for line in user_prompt.split("\n"):
+            if line.strip().lower().startswith("alert event:"):
+                alert_line = line.split(":", 1)[1].strip().lower()
+                break
+
+        if any(k in alert_line for k in ("falco", "shell", "t1059", "t1552", "security")) or (
+            ("t1059" in evidence_section or "security_alert" in evidence_section or "shell spawned" in evidence_section)
+            and "oom" not in alert_line
+            and "cpu" not in alert_line
+            and "aegishighpodcpu" not in alert_line
+        ):
             return {
                 "incident_id": f"INC-SEC-{int(time.time())}",
                 "target_pod": target_pod,
@@ -149,22 +162,19 @@ class LLMClient:
                 "mitre_technique": "T1059 - Command & Scripting Interpreter",
                 "root_cause": "Falco eBPF detected unauthorized interactive shell process spawned in container",
                 "recommended_action": "CILIUM_QUARANTINE_EBPF",
-                "reasoning": f"MITRE T1059 threat detected on '{target_pod}'. Restarting container is ineffective as attacker will re-infect; pod must be isolated via Cilium eBPF network cage for forensic analysis."
+                "confidence": 0.93,
+                "reasoning": (
+                    f"MITRE T1059 threat detected on '{target_pod}'. "
+                    "Restarting is ineffective; isolate via Cilium eBPF network cage."
+                ),
             }
 
-        elif "status: elevated" in evidence_section or "cpu_quota" in evidence_section or "cpu_throttling" in evidence_section or "cpu_saturation" in evidence_section or "latency_degradation" in evidence_section:
-            return {
-                "incident_id": f"INC-SCALE-{int(time.time())}",
-                "target_pod": target_pod,
-                "problem_type": "RESOURCE_CAPACITY",
-                "threat_level": "HIGH",
-                "mitre_technique": None,
-                "root_cause": f"Resource quota saturation or elevated latency detected on '{target_pod}'",
-                "recommended_action": "SCALE_DEPLOYMENT",
-                "reasoning": f"Workload demands exceed single replica cgroup quota for '{target_pod}'. Triggering horizontal pod scale-out."
-            }
-
-        elif "oom" in evidence_section or "near oom" in evidence_section:
+        elif (
+            "oom" in alert_line
+            or "oom" in evidence_section
+            or "near oom" in evidence_section
+            or "oom_killed" in evidence_section
+        ):
             return {
                 "incident_id": f"INC-OOM-{int(time.time())}",
                 "target_pod": target_pod,
@@ -173,18 +183,51 @@ class LLMClient:
                 "mitre_technique": None,
                 "root_cause": f"Memory allocation spike leading to OOMKilled risk on '{target_pod}' (Exit Code 137)",
                 "recommended_action": "RESTART_POD",
-                "reasoning": f"Memory usage exceeded cgroup threshold on '{target_pod}'. Operational memory leak detected; triggering pod rollout restart to clear bad heap state."
+                "confidence": 0.90,
+                "reasoning": (
+                    f"Memory usage exceeded cgroup threshold on '{target_pod}'. "
+                    "Operational memory leak; triggering pod restart."
+                ),
             }
 
-        else: # HTTP_500_SPIKE or general operational failure
+        elif (
+            "cpu" in alert_line
+            or "aegishighpodcpu" in alert_line
+            or "status: elevated" in evidence_section
+            or "cpu_quota" in evidence_section
+            or "cpu_throttling" in evidence_section
+            or "cpu_saturation" in evidence_section
+            or "aegishighpodcpu" in evidence_section
+        ):
+            return {
+                "incident_id": f"INC-SCALE-{int(time.time())}",
+                "target_pod": target_pod,
+                "problem_type": "OPERATIONAL_BUG",
+                "threat_level": "HIGH",
+                "mitre_technique": None,
+                "root_cause": f"Resource quota saturation or elevated CPU detected on '{target_pod}'",
+                "recommended_action": "SCALE_DEPLOYMENT",
+                "confidence": 0.88,
+                "reasoning": (
+                    f"Workload demands exceed single replica cgroup quota for '{target_pod}'. "
+                    "Triggering horizontal pod scale-out."
+                ),
+            }
+
+        else:
             return {
                 "incident_id": f"INC-SRE-{int(time.time())}",
                 "target_pod": target_pod,
                 "problem_type": "OPERATIONAL_BUG",
                 "threat_level": "MEDIUM",
                 "mitre_technique": None,
+                "root_cause": f"Operational anomaly on '{target_pod}' without clear security indicators",
                 "recommended_action": "RESTART_POD",
-                "reasoning": f"Elevated 500 error rate detected in Loki logs for '{target_pod}'. Unhandled database connection exception; triggering pod rollout restart to clear stale connection state."
+                "confidence": 0.75,
+                "reasoning": (
+                    f"Elevated error / degraded signals for '{target_pod}'. "
+                    "Triggering pod restart to clear bad state."
+                ),
             }
 
     def _persist_incident_db(self, verdict: dict):
