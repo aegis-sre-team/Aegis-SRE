@@ -43,28 +43,36 @@ spec:
         image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/frontend:v0.10.6
         ports:
         - containerPort: 8080
+        startupProbe:
+          httpGet:
+            path: /_healthz
+            port: 8080
+            httpHeaders:
+            - name: Cookie
+              value: shop_session-id=x-startup-probe
+          periodSeconds: 5
+          failureThreshold: 30
+          timeoutSeconds: 10
         readinessProbe:
-          initialDelaySeconds: 25
           httpGet:
             path: /_healthz
             port: 8080
             httpHeaders:
             - name: Cookie
               value: shop_session-id=x-readiness-probe
-          timeoutSeconds: 5
-          periodSeconds: 10
-          failureThreshold: 5
+          timeoutSeconds: 10
+          periodSeconds: 15
+          failureThreshold: 6
         livenessProbe:
-          initialDelaySeconds: 25
           httpGet:
             path: /_healthz
             port: 8080
             httpHeaders:
             - name: Cookie
               value: shop_session-id=x-liveness-probe
-          timeoutSeconds: 5
-          periodSeconds: 10
-          failureThreshold: 5
+          timeoutSeconds: 10
+          periodSeconds: 20
+          failureThreshold: 6
         env:
         - name: PORT
           value: '8080'
@@ -89,10 +97,10 @@ spec:
         resources:
           requests:
             cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 100m
             memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
 ---
 apiVersion: v1
 kind: Service
@@ -355,11 +363,11 @@ spec:
           value: "0"
         resources:
           requests:
-            cpu: 75m
+            cpu: 50m
             memory: 256Mi
           limits:
-            cpu: 300m
-            memory: 2560Mi
+            cpu: 500m
+            memory: 1536Mi
         startupProbe:
           grpc:
             port: 7070
@@ -491,7 +499,8 @@ spec:
   selector:
     matchLabels:
       app: loadgenerator
-  replicas: 1
+  # Keep at 0 by default — continuous locust load destabilizes frontend on single-node ARM
+  replicas: 0
   template:
     metadata:
       labels:
@@ -722,10 +731,10 @@ spec:
         resources:
           requests:
             cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 100m
             memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
 ---
 apiVersion: v1
 kind: Service
@@ -986,11 +995,11 @@ spec:
           failureThreshold: 5
         resources:
           requests:
-            cpu: 50m
+            cpu: 20m
             memory: 64Mi
           limits:
-            cpu: 100m
-            memory: 128Mi
+            cpu: 200m
+            memory: 256Mi
 ---
 apiVersion: v1
 kind: Service
@@ -1056,27 +1065,31 @@ spec:
           value: '3550'
         - name: DISABLE_PROFILER
           value: '1'
+        startupProbe:
+          grpc:
+            port: 3550
+          periodSeconds: 5
+          failureThreshold: 30
+          timeoutSeconds: 10
         readinessProbe:
           grpc:
             port: 3550
-          initialDelaySeconds: 25
-          timeoutSeconds: 5
+          timeoutSeconds: 10
           periodSeconds: 10
-          failureThreshold: 5
+          failureThreshold: 3
         livenessProbe:
           grpc:
             port: 3550
-          initialDelaySeconds: 25
-          timeoutSeconds: 5
+          timeoutSeconds: 10
           periodSeconds: 10
-          failureThreshold: 5
+          failureThreshold: 3
         resources:
           requests:
             cpu: 50m
-            memory: 64Mi
-          limits:
-            cpu: 100m
             memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
 ---
 apiVersion: v1
 kind: Service
