@@ -1,0 +1,19 @@
+# Aegis-SRE Phase 1 namespaces
+# online-boutique namespace is created by k8s/online-boutique/online-boutique.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegis-chaos
+  labels:
+    name: aegis-chaos
+    app.kubernetes.io/part-of: aegis-sre
+    aegis.io/role: chaos-lab
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegis-system
+  labels:
+    name: aegis-system
+    app.kubernetes.io/part-of: aegis-sre
+    aegis.io/role: control-plane

@@ -1,0 +1,104 @@
+# Aegis-SRE Phase 3–4 — Diagnostic Brain + Guardrails (aegis-system)
+# Secrets are NOT in this file (avoid wiping keys on apply). Create/patch with:
+#   kubectl -n aegis-system create secret generic aegis-brain-secrets \
+#     --from-literal=GROQ_API_KEY="$GROQ_API_KEY" \
+#     --from-literal=GROQ_MODEL="${GROQ_MODEL:-openai/gpt-oss-20b}" \
+#     --from-literal=DATABASE_URL="$DATABASE_URL" \
+#     --dry-run=client -o yaml | kubectl apply -f -
+# Prefer Neon via DATABASE_URL. emptyDir /data is SQLite fallback only (ephemeral).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-brain
+  namespace: aegis-system
+  labels:
+    app: aegis-brain
+    app.kubernetes.io/part-of: aegis-sre
+    aegis.io/phase: "4"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegis-brain
+  template:
+    metadata:
+      labels:
+        app: aegis-brain
+    spec:
+      containers:
+      - name: brain
+        image: aegis-brain:phase3
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8001
+        env:
+        - name: PROMETHEUS_URL
+          value: http://prometheus.monitoring.svc:9090
+        - name: LOKI_URL
+          value: http://loki.monitoring.svc:3100
+        - name: AEGIS_DRY_RUN
+          value: "true"
+        - name: AEGIS_SENSOR_TIMEOUT
+          value: "5.0"
+        - name: AEGIS_DB_DIR
+          value: /data
+        - name: GROQ_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aegis-brain-secrets
+              key: GROQ_API_KEY
+              optional: true
+        - name: GROQ_MODEL
+          valueFrom:
+            secretKeyRef:
+              name: aegis-brain-secrets
+              key: GROQ_MODEL
+              optional: true
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: aegis-brain-secrets
+              key: DATABASE_URL
+              optional: true
+        volumeMounts:
+        - name: brain-data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 50m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 768Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 20
+          periodSeconds: 20
+      volumes:
+      - name: brain-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-brain
+  namespace: aegis-system
+  labels:
+    app: aegis-brain
+spec:
+  type: ClusterIP
+  selector:
+    app: aegis-brain
+  ports:
+  - name: http
+    port: 8001
+    targetPort: 8001
