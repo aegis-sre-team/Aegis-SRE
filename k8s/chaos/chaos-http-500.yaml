@@ -1,0 +1,51 @@
+# HTTP load / error-path flood against Online Boutique frontend
+# Scale to 1 to trigger; requires boutique Service frontend.online-boutique
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-http-500
+  namespace: aegis-chaos
+  labels:
+    app: chaos-http-500
+    aegis.io/chaos: http-500
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: chaos-http-500
+  template:
+    metadata:
+      labels:
+        app: chaos-http-500
+        aegis.io/chaos: http-500
+    spec:
+      containers:
+        - name: flood
+          image: curlimages/curl:8.5.0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              TARGET="${FRONTEND_URL:-http://frontend.online-boutique.svc.cluster.local:80}"
+              echo "chaos-http-500: flooding ${TARGET}"
+              while true; do
+                curl -s -o /dev/null -w "%{http_code}\n" --connect-timeout 3 --max-time 5 "${TARGET}/" || echo 000
+                curl -s -o /dev/null -w "%{http_code}\n" --connect-timeout 3 --max-time 5 "${TARGET}/_healthz" || echo 000
+                curl -s -o /dev/null -w "%{http_code}\n" --connect-timeout 3 --max-time 5 "${TARGET}/api/cart/chaos-invalid" || echo 000
+                sleep 1
+              done
+          env:
+            - name: FRONTEND_URL
+              value: "http://frontend.online-boutique.svc.cluster.local:80"
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "64Mi"
+              cpu: "200m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      restartPolicy: Always

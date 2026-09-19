@@ -1,0 +1,38 @@
+# CPU burn injector — scale to 1 to trigger sustained high CPU
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-cpu-spike
+  namespace: aegis-chaos
+  labels:
+    app: chaos-cpu-spike
+    aegis.io/chaos: cpu
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: chaos-cpu-spike
+  template:
+    metadata:
+      labels:
+        app: chaos-cpu-spike
+        aegis.io/chaos: cpu
+    spec:
+      containers:
+        - name: stress
+          image: polinux/stress:latest
+          command: ["stress"]
+          args: ["--cpu", "2"]
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "100m"
+            limits:
+              memory: "64Mi"
+              cpu: "500m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      restartPolicy: Always

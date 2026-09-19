@@ -1,0 +1,41 @@
+# CrashLoopBackOff injector — scale to 1 to trigger continuous restarts
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-crashloop
+  namespace: aegis-chaos
+  labels:
+    app: chaos-crashloop
+    aegis.io/chaos: crashloop
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: chaos-crashloop
+  template:
+    metadata:
+      labels:
+        app: chaos-crashloop
+        aegis.io/chaos: crashloop
+    spec:
+      containers:
+        - name: crash
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "chaos-crashloop: exiting to force CrashLoopBackOff"
+              exit 1
+          resources:
+            requests:
+              memory: "16Mi"
+              cpu: "10m"
+            limits:
+              memory: "32Mi"
+              cpu: "50m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      restartPolicy: Always
