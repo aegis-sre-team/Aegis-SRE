@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cilium-host-net-cleanup
+  namespace: kube-system
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 1
+  template:
+    spec:
+      hostNetwork: true
+      hostPID: true
+      restartPolicy: Never
+      containers:
+      - name: cleanup
+        image: alpine:3.20
+        securityContext:
+          privileged: true
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eux
+          apk add --no-cache util-linux iproute2
+          nsenter -t 1 -m -u -i -n -- sh -c '
+            set -eux
+            ip link del flannel.1 2>/dev/null || true
+            ip link del cilium_vxlan 2>/dev/null || true
+            ip link del cilium_net 2>/dev/null || true
+            ip link del cilium_host 2>/dev/null || true
+            # Remove stale Flannel CNI configs so only Cilium remains
+            rm -f /etc/cni/net.d/10-flannel.conflist /var/lib/rancher/k3s/agent/etc/cni/net.d/10-flannel.conflist 2>/dev/null || true
+            ls -la /etc/cni/net.d/ 2>/dev/null || true
+            ls -la /var/lib/rancher/k3s/agent/etc/cni/net.d/ 2>/dev/null || true
+            ip -d link show | head -80
+          '
+          echo "host net cleanup done"
+      tolerations:
+      - operator: Exists

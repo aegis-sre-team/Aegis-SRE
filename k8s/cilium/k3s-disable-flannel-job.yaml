@@ -1,0 +1,47 @@
+# One-shot host prep: disable K3s Flannel so Cilium can be primary CNI.
+# Privileged + hostPID so we can write host config and restart k3s.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k3s-disable-flannel
+  namespace: kube-system
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 1
+  template:
+    spec:
+      hostNetwork: true
+      hostPID: true
+      restartPolicy: Never
+      containers:
+      - name: prep
+        image: alpine:3.20
+        securityContext:
+          privileged: true
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eux
+          apk add --no-cache util-linux
+          mkdir -p /host/etc/rancher/k3s
+          cat > /host/etc/rancher/k3s/config.yaml <<'EOF'
+          flannel-backend: none
+          disable-network-policy: true
+          EOF
+          # Strip accidental leading spaces from heredoc indentation
+          sed -i 's/^[[:space:]]*//' /host/etc/rancher/k3s/config.yaml
+          echo "Wrote /etc/rancher/k3s/config.yaml:"
+          cat /host/etc/rancher/k3s/config.yaml
+          # Restart k3s on the host (API will drop briefly)
+          nsenter -t 1 -m -u -i -n -- systemctl restart k3s || true
+          echo "k3s restart issued"
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+      tolerations:
+      - operator: Exists
