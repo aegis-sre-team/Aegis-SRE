@@ -1,6 +1,8 @@
-# 🛡️ Aegis-SRE: Autonomous Self-Healing Infrastructure
+# Aegis-SRE
 
-> *An Adaptive Immune System for Cloud-Native Kubernetes Environments*
+**Autonomous self-healing infrastructure for cloud-native Kubernetes environments.**
+
+Aegis-SRE acts as an adaptive immune system for clusters: it observes telemetry and kernel-level security signals, diagnoses incidents with a local LLM and RAG knowledge base, then either **heals** operational failures or **defends** against active threats — without treating every alert the same way.
 
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-K3s-326CE5)](https://k3s.io/)
 [![Ollama](https://img.shields.io/badge/LLM-Ollama%20(Llama%203.2%20%2F%203.1)-green)](https://ollama.com/)
@@ -9,241 +11,433 @@
 
 ---
 
-> 🚀 **Phase 1 Cloud Setup Guide:** Ready to provision the $0/month Oracle Cloud ARM Kubernetes cluster? Follow [`PHASE1_CLOUD_SETUP.md`](file:///c:/dev/aegis-sre/PHASE1_CLOUD_SETUP.md).
+## Why Aegis-SRE?
 
-## 🧠 What is Aegis-SRE?
+Traditional auto-remediation often defaults to “restart the pod.” That works for a memory leak. It fails for an active intrusion — restarting under attack can wipe forensic state while the attacker still has a foothold.
 
-**Aegis-SRE** is an autonomous operations platform that acts as an **Adaptive Immune System** for Kubernetes environments. It combines **LLM-driven diagnostics** (Llama 3.2 3B / Llama 3.1 8B via Ollama) and **eBPF-powered security rules** (Falco + Cilium) to automatically distinguish between two fundamentally different types of infrastructure failure:
+Aegis classifies each incident into one of two paths:
 
-| Problem Type | Nature | Aegis Response |
+| Problem type | Examples | Response |
 |---|---|---|
-| 🐛 **Operational Bug** | Memory leak, OOM crash, pod failure | **HEAL** → Rollout Restart / Scale |
-| 🔴 **Security Attack** | Reverse shell, credential scrape, T1059 | **DEFEND** → Isolate via Cilium eBPF |
+| **Operational bug** | Memory leak, OOMKill, CrashLoopBackOff, CPU throttling | **Heal** — rollout restart, scale deployment |
+| **Security attack** | Reverse shell, credential scrape, network recon (MITRE ATT&CK) | **Defend** — Cilium eBPF quarantine; preserve pod for DFIR |
 
-**Key Insight:** Restarting a container under active intrusion does not eliminate the attacker. Aegis isolates security threats while maintaining container state for forensic analysis.
-
----
-
-## 💻 Implementation & Execution Modes
-
-Aegis-SRE is structured into two distinct execution modes:
-
-1. **Local Reference Software Implementation (Built & Tested in Repository)**:
-   - **Local LLM & RAG Engine**: Python-based AI diagnostic brain interfacing with local Ollama (`llama3.2:3b` / `llama3.1:8b`) with automatic model discovery and TF-IDF vector retrieval.
-   - **Guardrail Safety Engine**: Rule-based validator enforcing action blocklists (`DELETE_NAMESPACE`), confidence thresholds ($\ge 0.70$), rate limits (max 3 restarts/hr), and audit logging.
-   - **Go Controller**: Native Go Kubernetes controller (`controller/main.go`) built with `client-go` executing restarts, scaling, and Cilium NetworkPolicy quarantine YAML generation.
-   - **Real-Time Command Dashboard**: FastAPI & WebSockets server (`src/dashboard/server.py`) rendering telemetry, live pod matrix, HITL remediation drawer, and DFIR forensic modal.
-   - **Full Test Battery**: 30 automated tests across 6 test suites including the 8-category Cloud-OpsBench chaos suite (`test/test_chaos_benchmark.py`).
-
-2. **Target Cloud Deployment Architecture**:
-   - Manifests and step-by-step guides ([`PHASE1_CLOUD_SETUP.md`](file:///c:/dev/aegis-sre/PHASE1_CLOUD_SETUP.md)) for deploying K3s on Oracle Cloud ARM A1 (Always Free) connected to an Azure B1s monitoring host.
+**Core idea:** restarting a container under active intrusion does not eliminate the attacker. Aegis isolates security threats while keeping container state available for forensics.
 
 ---
 
-## 🏗️ Architecture Mental Model
+## Features
 
-Think of cloud infrastructure monitoring like a **facility management system**:
-
-- 🌡️ **Prometheus** = Telemetry sensors measuring CPU/RAM saturation.
-- 📷 **Falco** = Kernel security sensors detecting unauthorized process execution.
-- 🧠 **Ollama LLM** = Diagnostic brain reading runbooks to classify incidents.
-- 📋 **Guardrails** = Safety controller vetoing destructive or un-confident actions.
-- 🤖 **Go Controller** = Execution engine applying Kubernetes state changes.
-- 🔒 **Cilium** = eBPF network isolation cage blocking threat ingress/egress.
-- 📱 **Dashboard** = WebSockets command interface for human oversight and control.
-
----
-
-## 🔄 The Two Remediation Paths
-
-### Path A — The Operational Bug Path
-```text
-Alert: "OOMKilled on pod checkout-service"
-  → Ollama LLM: "Memory leak detected, no threat indicators"
-  → Action: {"action": "RESTART_POD", "target": "checkout-service"}
-  → Guardrails: ✅ APPROVED (Passed confidence & rate limits)
-  → Go Controller: Executes rollout restart & verifies post-health state
-```
-
-### Path B — The Security Threat Path
-```text
-Alert: "Falco: Shell spawned in container (T1059)"
-  → Ollama LLM: "Active intrusion detected"
-  → Action: {"action": "CILIUM_QUARANTINE_EBPF", "target": "pod-xyz", "reason": "T1059"}
-  → Guardrails: ✅ APPROVED (Forces isolation over restart)
-  → Go Controller: Applies Cilium NetworkPolicy → DROP all traffic
-  → Result: Attacker isolated in eBPF cage; pod preserved for DFIR forensics
-```
+- **Dual-path remediation** — operational heal vs. security isolate, driven by LLM diagnosis + rule guardrails
+- **Local LLM brain** — Ollama (`llama3.2:3b` / `llama3.1:8b`) with optional Groq / Gemini free-tier backends
+- **RAG knowledge base** — SRE runbooks + MITRE ATT&CK technique notes for grounded diagnoses
+- **Guardrail safety engine** — action blocklists, confidence thresholds, restart rate limits, human escalation
+- **Go Kubernetes controller** — executes approved actions (restart, scale, Cilium NetworkPolicy quarantine)
+- **Observability stack** — Prometheus, Loki/Promtail, Falco (eBPF), Grafana
+- **Real-time dashboard** — FastAPI + WebSockets mission control with HITL remediation and DFIR views
+- **Chaos / Cloud-OpsBench tests** — automated suite covering operational and security failure categories
+- **Zero-cost cloud path** — designed for Oracle Cloud Always Free ARM + optional free-tier monitoring host
 
 ---
 
-## 📊 Verification & Test Battery (30 / 30 Tests Passed)
+## Architecture
 
-Aegis-SRE is benchmarked against the 8 real-world microservice failure categories defined in ***Cloud-OpsBench: A Reproducible Benchmark for Agentic RCA*** (`arXiv:2603.00468`):
+### Mental model
+
+| Component | Role |
+|---|---|
+| **Prometheus** | Telemetry sensors (CPU, memory, error rates) |
+| **Falco** | Kernel/eBPF security sensors (unauthorized process, sensitive file access) |
+| **Loki + Promtail** | Centralized log aggregation |
+| **Ollama + RAG** | Diagnostic brain — classifies incidents using runbooks and MITRE notes |
+| **Guardrails** | Safety layer — vetoes destructive or low-confidence actions |
+| **Go controller** | Execution muscle — applies Kubernetes and Cilium changes |
+| **Cilium** | eBPF network isolation cage for quarantined pods |
+| **Dashboard** | Human oversight — live telemetry, approve/escalate, forensics |
+
+### End-to-end pipeline
 
 ```text
-Ran 6 tests in test_guardrails.py      -> OK
-Ran 5 tests in test_controller.py      -> OK
-Ran 2 tests in test_pipeline.py        -> OK
-Ran 4 tests in test_edge_cases.py      -> OK
-Ran 8 tests in test_chaos_benchmark.py -> OK
-Ran 5 tests in test_dashboard.py       -> OK
-
-TOTAL: 30 / 30 Tests PASSED (100% Success Rate)
+Sensors (Prometheus / Falco / Loki)
+        │
+        ▼
+Telemetry collector + metric serialization
+        │
+        ▼
+RAG retrieval (runbooks + MITRE TTPs)
+        │
+        ▼
+LLM diagnosis → structured verdict
+        │
+        ▼
+Guardrail engine (blocklist / confidence / rate limits)
+        │
+        ├── APPROVED → Go controller → restart | scale | Cilium quarantine
+        └── REJECTED / LOW CONFIDENCE → escalate to human
+        │
+        ▼
+Verification loop → healthy? log success : escalate again
 ```
 
-Run full test suite:
+### Remediation paths
+
+**Path A — Operational bug**
+
+```text
+Alert: OOMKilled on checkout-service
+  → LLM: memory leak, no threat indicators
+  → Action: RESTART_POD
+  → Guardrails: approved (confidence + rate limits OK)
+  → Controller: rollout restart, re-check health
+```
+
+**Path B — Security threat**
+
+```text
+Alert: Falco — shell spawned in container (T1059)
+  → LLM: active intrusion
+  → Action: CILIUM_QUARANTINE_EBPF
+  → Guardrails: approved (isolation preferred over restart)
+  → Controller: Cilium NetworkPolicy → DROP ingress/egress
+  → Pod preserved for DFIR
+```
+
+### Target cloud layout
+
+```text
+┌─────────────────────────────────────────────────────┐
+│          Oracle ARM A1 — Always Free                │
+│          4 OCPU | 24 GB RAM | K3s                   │
+│                                                     │
+│  Microservices + chaos injection                    │
+│    → Prometheus + Falco + Loki                      │
+│    → Ollama + RAG                                   │
+│    → Guardrails → Go controller                     │
+│    → Cilium NetworkPolicy isolation                 │
+└───────────────────────┬─────────────────────────────┘
+                        │ VPN (e.g. Tailscale)
+                        ▼
+┌─────────────────────────────────────────────────────┐
+│          Optional monitoring host (e.g. Azure)      │
+│          FastAPI + WebSockets dashboard             │
+└─────────────────────────────────────────────────────┘
+```
+
+Local development uses Docker Compose with the same conceptual layers (target app, Prometheus, Loki, Falco, dashboard, Grafana).
+
+---
+
+## Repository layout
+
+```text
+Aegis-SRE/
+├── src/
+│   ├── brain/              # Diagnostic engine, LLM client, RAG, collectors
+│   ├── guardrails/         # Action schema + safety validator
+│   ├── controller/         # Python executor + Cilium policy helpers
+│   ├── dashboard/          # FastAPI mission control + static UI
+│   ├── db/                 # SQLite persistence models
+│   ├── knowledge_base/     # Runbooks + MITRE security notes
+│   └── target_app/         # Demo e-commerce / chaos target app
+├── controller/             # Go Kubernetes action controller (client-go)
+├── config/                 # Prometheus, Loki, Promtail, Falco, Grafana
+├── deploy/
+│   ├── docker-compose.yml  # Local full stack
+│   └── k8s/                # Namespace, target app, chaos suite manifests
+├── k8s/
+│   ├── monitoring/         # Cluster monitoring manifests
+│   └── online-boutique/    # Online Boutique workload manifests
+├── test/                   # Unit, integration, chaos benchmark suites
+├── scripts/                # Public tunnel helpers (Cloudflare)
+├── PHASE1_CLOUD_SETUP.md   # Oracle Cloud K3s provisioning guide
+├── PHASES.md               # Phased build plan
+└── requirements.txt
+```
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Cluster | K3s / Docker Compose |
+| Metrics | Prometheus + Alertmanager |
+| Security sensing | Falco + eBPF |
+| Logs | Loki + Promtail |
+| Visualization | Grafana |
+| AI diagnosis | Ollama (Llama 3.2 3B / 3.1 8B); optional Groq / Gemini |
+| Memory / RAG | TF-IDF retrieval over runbooks and MITRE notes |
+| Guardrails | Python safety engine |
+| Controller | Go + `client-go` |
+| Isolation | Cilium NetworkPolicy |
+| Dashboard | FastAPI + WebSockets |
+| Persistence | SQLite (local); optional cloud Postgres |
+
+---
+
+## Prerequisites
+
+- **Python** 3.10+
+- **Docker** and Docker Compose (for the full local stack)
+- **Go** 1.21+ (optional — only to build/run the native controller)
+- **Ollama** (recommended for local LLM inference) — [ollama.com](https://ollama.com)
+- **kubectl** + a kubeconfig (for real cluster control; dry-run works without it)
+
+Optional free-tier AI keys (if not using Ollama): Groq or Google Gemini — see [`.env.example`](.env.example).
+
+---
+
+## Quick start
+
+### 1. Clone and configure
+
+```bash
+git clone <repo-url> Aegis-SRE
+cd Aegis-SRE
+cp .env.example .env
+```
+
+Edit `.env` as needed. Minimum for local LLM:
+
+```env
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=llama3.2:3b
+PROMETHEUS_URL=http://localhost:9090
+LOKI_URL=http://localhost:3100
+TARGET_APP_URL=http://localhost:5000
+```
+
+Pull a model if using Ollama:
+
+```bash
+ollama pull llama3.2:3b
+# or: ollama pull llama3.1:8b
+```
+
+### 2. Run with Docker Compose (recommended)
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+| Service | URL |
+|---|---|
+| Aegis dashboard | http://localhost:8000 |
+| Target app | http://localhost:5000 |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (`admin` / `admin`) |
+| Loki | http://localhost:3100 |
+
+### 3. Run the dashboard locally (without full Compose)
+
+```bash
+pip install -r requirements.txt
+# PowerShell
+$env:PYTHONPATH="."
+python -m src.dashboard.server
+```
+
+```bash
+# bash
+export PYTHONPATH=.
+python -m src.dashboard.server
+```
+
+Open http://localhost:8000.
+
+### 4. Go controller (optional)
+
+```bash
+cd controller
+go run .
+```
+
+Health check: `GET /healthz`. Without a valid kubeconfig the controller runs in offline/dry-run mode.
+
+---
+
+## Configuration
+
+All primary settings live in [`.env.example`](.env.example):
+
+| Variable | Purpose |
+|---|---|
+| `OLLAMA_HOST` / `OLLAMA_MODEL` | Local LLM endpoint and model |
+| `GROQ_API_KEY` / `GEMINI_API_KEY` | Optional cloud LLM backends |
+| `PROMETHEUS_URL` / `LOKI_URL` / `TARGET_APP_URL` | Telemetry and target endpoints |
+| `DATABASE_URL` / `AEGIS_DB_DIR` | SQLite state and logs directory |
+| `AEGIS_ESCALATION_WEBHOOK` | Discord/Slack webhook for human escalation |
+| `GO_CONTROLLER_URL` | Reconcile API for the Go action controller |
+
+Sensor configs are under `config/` (Prometheus scrape targets, Falco rules, Loki/Promtail, Grafana datasources).
+
+---
+
+## Guardrails and safety
+
+Before any remediation runs, the **Guardrail Engine** validates the LLM verdict:
+
+- **Catastrophic blocklist** — e.g. `DELETE_NAMESPACE` and other destructive actions are rejected
+- **Confidence gate** — default minimum confidence ≥ **0.70**; otherwise escalate to a human
+- **Rate limits** — max **3** pod restarts per hour per target (prevents restart storms)
+- **Security preference** — active intrusion signals favor **quarantine** over blind restart
+- **Audit logging** — decisions recorded for review and escalation trails
+
+Verification after action:
+
+```text
+Action taken → re-check sensors → still broken? → escalate
+                              → healthy?      → log success
+```
+
+---
+
+## Security: MITRE ATT&CK mapping
+
+| Signal / Falco alert | MITRE technique | Typical Aegis action |
+|---|---|---|
+| Shell spawned in container | T1059 — Command and Scripting Interpreter | `CILIUM_QUARANTINE_EBPF` |
+| Sensitive file read (`/etc/shadow`, etc.) | T1552 — Unsecured Credentials | `CILIUM_QUARANTINE_EBPF` |
+| Network discovery tools | T1046 — Network Service Discovery | `CILIUM_QUARANTINE_EBPF` |
+| Valid account / suspicious auth patterns | T1078 — Valid Accounts | Quarantine / escalate |
+| Endpoint DoS / resource exhaustion attack | T1499 — Endpoint Denial of Service | Quarantine / scale as appropriate |
+| Cryptomining process patterns | Resource Hijacking | `CILIUM_QUARANTINE_EBPF` |
+| Memory spike + OOMKill (no threat indicators) | Operational | `RESTART_POD` |
+| CPU throttling loop | Operational | `SCALE_DEPLOYMENT` |
+
+Knowledge base documents live in:
+
+- `src/knowledge_base/runbooks/` — operational SRE playbooks
+- `src/knowledge_base/security/` — MITRE-oriented security notes
+
+Falco local rules: `config/falco/`.
+
+---
+
+## Knowledge base
+
+Operational runbooks include OOM, CrashLoopBackOff, CPU throttling, HTTP 500 spikes, DB connection pool exhaustion, and circuit-breaker trips.
+
+Security notes cover command execution, credential access, network recon, valid accounts, endpoint DoS, and cryptomining.
+
+The RAG engine retrieves relevant documents at diagnosis time so the LLM grounds recommendations in project-specific guidance rather than generic guesses.
+
+---
+
+## Testing
+
+The repository includes automated suites for guardrails, controller behavior, pipeline integration, edge cases, dashboard APIs, and an 8-category chaos / Cloud-OpsBench-style benchmark.
+
+```powershell
+$env:PYTHONPATH="."; python -m unittest discover -s test -p "test_*.py"
+```
+
+```bash
+export PYTHONPATH=.
+python -m unittest discover -s test -p "test_*.py"
+```
+
+Run the chaos benchmark alone:
+
 ```powershell
 $env:PYTHONPATH="."; python test/test_chaos_benchmark.py
 ```
 
-Run Real-Time Command Dashboard:
-```powershell
-$env:PYTHONPATH="."; python -m src.dashboard.server
-```
+Reports and logs (when generated) appear under `logs/` (e.g. benchmark JSON, executive markdown, escalation JSONL).
 
-Or Run via Docker (Zero Dependencies):
-```bash
-docker compose -f deploy/docker-compose.yml up -d --build
-```
-Open browser to: `http://localhost:8000`
-
-- Benchmark JSON report: [`logs/cloud_opsbench_report.json`](file:///c:/dev/aegis-sre/logs/cloud_opsbench_report.json)
-- Executive Markdown report: [`logs/EXECUTIVE_BENCHMARK_REPORT.md`](file:///c:/dev/aegis-sre/logs/EXECUTIVE_BENCHMARK_REPORT.md)
-- Escalations Log: [`logs/escalations.jsonl`](file:///c:/dev/aegis-sre/logs/escalations.jsonl)
+Additional hands-on notes: [`test/HANDS_ON_GUIDE.md`](test/HANDS_ON_GUIDE.md).
 
 ---
 
-## 🏛️ Target Cloud Architecture Overview
+## Kubernetes and cloud deployment
+
+### Local / lab manifests
+
+- `deploy/k8s/` — namespace, target app, chaos suite
+- `k8s/online-boutique/` — Google Online Boutique–style microservice workload
+- `k8s/monitoring/` — cluster monitoring resources
+
+### Phase 1 cloud lab (Oracle Always Free)
+
+Step-by-step provisioning for a **$0/month** K3s cluster on Oracle Cloud ARM A1 (4 OCPU / 24 GB RAM):
+
+→ **[`PHASE1_CLOUD_SETUP.md`](PHASE1_CLOUD_SETUP.md)**
+
+Phased roadmap (infrastructure → sensors → brain → guardrails → controller → immune response → dashboard):
+
+→ **[`PHASES.md`](PHASES.md)**
+
+### Approximate free-tier cost model
+
+| Resource | Platform | Cost |
+|---|---|---|
+| K3s cluster | Oracle Cloud ARM A1 Always Free | $0/mo |
+| Optional dashboard VM | Azure free-tier hours (or local) | $0/mo |
+| Local LLM | Ollama on host / cluster | $0 |
+| **Total** | | **$0/mo** |
+
+### Public exposure (optional demos)
+
+Scripts under `scripts/` can publish the local dashboard via Cloudflare quick tunnels (no custom domain required) or a named tunnel with a custom hostname. See [`SETUP_NEEDED.md`](SETUP_NEEDED.md) for tunnel and cloud integration notes.
+
+---
+
+## Production-oriented roadmap
+
+Aegis is designed to move from local Compose validation to a live Kubernetes lab:
+
+1. **Real microservice target** — Online Boutique (or equivalent) on K3s
+2. **Public ingress + TLS** — Traefik/NGINX with certificates for storefront traffic
+3. **Live threat injection** — controlled red-team scenarios against exposed endpoints to measure detection and eBPF containment
+4. **Hybrid / multi-cluster** — extend the controller across providers (OCI ↔ Azure ↔ on-prem)
 
 ```text
-┌─────────────────────────────────────────────────────┐
-│          ORACLE ARM A1 — Always Free                │
-│          4 OCPU | 24 GB RAM | K3s Cluster           │
-│                                                     │
-│  Microservices + Chaos Injection Pods               │
-│          ↓                                          │
-│  Prometheus + Falco eBPF + Loki (Sensing Layer)     │
-│          ↓                                          │
-│  Ollama (Llama 3.2 3B / 3.1 8B) + RAG DB (Brain)    │
-│          ↓                                          │
-│  Guardrail Engine → Go K8s Controller (Muscle)      │
-│          ↓                                          │
-│  Cilium NetworkPolicy (eBPF Isolation Cage)         │
-└───────────────────────┬─────────────────────────────┘
-                        │ Tailscale VPN
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│          AZURE B1s — Free Tier                      │
-│     FastAPI + WebSockets Dashboard                  │
-└─────────────────────────────────────────────────────┘
+Public internet (users / controlled attack traffic)
+        │ HTTPS
+        ▼
+Ingress (Traefik / NGINX)
+        │
+        ▼
+Online Boutique microservices
+        │ telemetry
+        ▼
+Aegis-SRE (Prometheus + Falco → LLM → Guardrails → Go + Cilium)
 ```
 
 ---
 
-## ⚙️ Core Tech Stack
+## Development phases (summary)
 
-| Layer | Technology | Implementation Role |
-|---|---|---|
-| Cluster | K3s / Docker Compose | Container orchestration & target workloads |
-| Metrics | Prometheus + AlertManager | Metric collection & threshold alerts |
-| Security | Falco + eBPF | Kernel syscall security event detection |
-| Logs | Loki + Promtail | Centralized log aggregation |
-| AI Brain | Ollama (Llama 3.2 3B / 3.1 8B) | Local LLM diagnostic inference |
-| Memory | Vector Search RAG | SRE runbooks + MITRE ATT&CK TTP lookup |
-| Guardrails | Python Safety Engine | Blocklists, confidence gates, rate limits |
-| Controller | Go + client-go | Kubernetes reconcile loop & action execution |
-| Isolation | Cilium NetworkPolicy | eBPF pod network quarantine |
-| Dashboard | FastAPI + WebSockets | Real-time command dashboard & HITL drawer |
+| Phase | Focus |
+|---|---|
+| 1 | Cloud lab — K3s, target apps, chaos pods, connectivity |
+| 2 | Sensory system — Prometheus, Falco, Loki |
+| 3 | Diagnostic brain — Ollama + RAG |
+| 4 | Decision engine — function calling + guardrails |
+| 5 | Action muscle — Go controller + Cilium policies |
+| 6 | Immune response — heal vs. defend adaptive logic |
+| 7 | Command center — real-time dashboard and HITL |
 
----
-
-## 🔐 Security: MITRE ATT&CK Mapping
-
-| Falco Alert | MITRE TTP | Aegis Response |
-|---|---|---|
-| Shell spawned in container | T1059 — Command Execution | CILIUM_QUARANTINE_EBPF |
-| Sensitive file read (/etc/shadow) | T1552 — Credential Access | CILIUM_QUARANTINE_EBPF |
-| Network tool launched | T1046 — Network Discovery | CILIUM_QUARANTINE_EBPF |
-| Memory spike + OOM Kill | (Operational) | RESTART_POD |
-| CPU throttling loop | (Operational) | SCALE_DEPLOYMENT |
+Details and success criteria: [`PHASES.md`](PHASES.md).
 
 ---
 
-## 📊 The Verification Loop
+## Troubleshooting
 
-The system verifies every action it takes:
-
-```
-Action Taken → Re-check Sensors → Still broken? → Escalate to Human
-                               → Healthy?      → Log success ✅
-```
-
-**Formula:**  
-`Success = Verify(Action(LLM_Output)) ∈ {Healthy_Metrics, No_Security_Alerts}`
+| Symptom | What to check |
+|---|---|
+| Dashboard cannot reach metrics | `PROMETHEUS_URL` / Compose network; Prometheus UI at :9090 |
+| LLM timeouts or empty diagnoses | Ollama running (`ollama list`); model name matches `.env` |
+| Controller always dry-run | Valid `~/.kube/config` or in-cluster service account |
+| Falco not emitting events | Privileged container / host mounts in Compose; local rules under `config/falco/` |
+| Guardrail always escalates | Confidence below 0.70 or rate limit hit — check logs under `logs/` |
 
 ---
 
-## 💰 Zero-Cost Infrastructure
+## License
 
-| Resource | Platform | Tier | Cost |
-|---|---|---|---|
-| K3s Cluster | Oracle Cloud ARM A1 | Always Free | $0/mo |
-| Dashboard | Azure B1s VM | Free 750 hrs/mo | $0/mo |
-| **Total** | | | **$0/mo** |
+See the repository for license terms (add or update a `LICENSE` file as appropriate for your distribution).
 
 ---
 
-## 🌐 Real-World Production & Public Web Deployment Roadmap
-
-While local container testing verifies the core sensory and controller logic, **Aegis-SRE is engineered for real-world production Kubernetes deployments**.
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        PUBLIC INTERNET ACCESS                          │
-│        (Real External Web Users & Red-Team Attack Simulators)           │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ HTTPS (TLS)
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                  INGRESS GATEWAY (Traefik / NGINX)                     │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Internal K8s Routing
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│               ONLINE BOUTIQUE E-COMMERCE MICROSERVICES                 │
-│      (Frontend, Checkout, Payment, Cart, Currency, Ads Pods)           │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Real-time Telemetry
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│           AEGIS-SRE AUTONOMOUS IMMUNE SYSTEM (ORACLE ARM / CLOUD)      │
-│     Prometheus + Falco eBPF ➔ Ollama Llama 3.1 ➔ Go Cilium Controller  │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-### 🚀 Production Deployment Extensions
-
-1. **Targeting Real E-Commerce Web Apps:**  
-   Transitioning from synthetic test endpoints to deploying **Google Cloud's Online Boutique** — a 10-microservice polyglot e-commerce web application running live on K3s.
-2. **Public Ingress & TLS Domain Exposure:**  
-   Routing external traffic through a public NGINX/Traefik Ingress controller with automated SSL certificates, exposing the store front to public internet traffic.
-3. **Live Public Red-Teaming & Threat Injection:**  
-   Executing live penetration attacks against the publicly accessible web endpoints (SQLi, reverse shell payload delivery, memory exhaustion) to evaluate Aegis-SRE's real-time eBPF containment speed in a live cloud environment.
-4. **Multi-Cluster & Hybrid Cloud Extension:**  
-   Extending the Go K8s controller to manage cross-cluster workloads spanning multiple cloud providers (Oracle Cloud ARM A1 ↔ Azure ↔ On-Premises).
-
----
-
-## 👥 Team Division
-
-| Domain | Krishna | Teammate |
-|---|---|---|
-| Phase 1–2 | Falco eBPF Rules, Cilium Policies | K3s Setup, Prometheus/Loki |
-| Phase 3–4 | MITRE TTP Mapping, Guardrail Logic | Ollama/RAG, Function Calling |
-| Phase 5–6 | Security Forensics, Isolation Logic | Go Controller, Reconcile Loop |
-| Final | Technical Write-up (Security) | React Dashboard, API |
-
----
-
-*Aegis-SRE — Because your infrastructure deserves an immune system, not just a pager.*
+*Aegis-SRE — infrastructure that can heal itself, and isolate threats when healing is not enough.*

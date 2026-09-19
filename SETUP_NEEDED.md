@@ -11,7 +11,7 @@
 | **⚡ Groq Cloud LPU (AI Brain)** | ✅ **CONNECTED & VERIFIED** | Running `openai/gpt-oss-20b` (sub-second diagnosis). |
 | **🗄️ Neon Cloud PostgreSQL** | ✅ **CONNECTED & VERIFIED** | Serverless Postgres v18 live on AWS us-east-2; tables initialized! |
 | **🌐 Cloudflare Zero-Trust** | 🟡 **READY TO RUN** | Choose Quick Tunnel (no account) or Cloudflare Dashboard Named Tunnel. |
-| **☁️ Oracle Cloud ARM K3s** | ⏳ **ACTION NEEDED FROM YOU** | Provision Always Free 24 GB RAM Ampere instance on OCI. |
+| **☁️ Oracle Cloud ARM K3s** | ⏳ **ACTION NEEDED FROM YOU** | Provision Always Free 24 GB RAM Ampere instance on OCI. Phase 1 manifests are ready — see `k8s/PHASE1_VERIFY.md` + `PHASES.md`. |
 
 ---
 

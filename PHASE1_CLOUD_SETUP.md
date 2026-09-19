@@ -114,11 +114,43 @@ ls -la /sys/kernel/btf/vmlinux
 
 ## 🎯 Step 6: Deploy Phase 1 Manifests
 
-Once the cloud cluster responds to `kubectl`, we will deploy Phase 1 manifests directly to the cloud:
+Once the cloud cluster responds to `kubectl`, deploy from the **repo root** (canonical paths only):
 
 ```bash
-# Deploy target microservices & chaos pods directly to cloud
+# 1) Control-plane + chaos namespaces
 kubectl apply -f k8s/00-namespace.yaml
-kubectl apply -f k8s/online-boutique/
+
+# 2) Primary target: Online Boutique (creates online-boutique namespace)
+kubectl apply -f k8s/online-boutique/online-boutique.yaml
+
+# 3) Real chaos injectors (all Deployments start at replicas=0)
 kubectl apply -f k8s/chaos/
 ```
+
+### Verify
+
+```bash
+kubectl get nodes
+kubectl get pods -n online-boutique
+kubectl get deploy -n aegis-chaos
+```
+
+### Trigger chaos (examples — scale one at a time)
+
+```bash
+kubectl scale deploy/chaos-oom -n aegis-chaos --replicas=1
+kubectl scale deploy/chaos-cpu-spike -n aegis-chaos --replicas=1
+kubectl scale deploy/chaos-crashloop -n aegis-chaos --replicas=1
+kubectl scale deploy/chaos-shell-injection -n aegis-chaos --replicas=1
+kubectl scale deploy/chaos-http-500 -n aegis-chaos --replicas=1
+```
+
+Scale chaos Deployments back down when finished:
+
+```bash
+kubectl scale deploy -n aegis-chaos --all --replicas=0
+```
+
+Full Phase 1 success checklist: see `PHASES.md` → Phase 1.
+
+> **Note:** Do not use `deploy/k8s/03-chaos/` — that path is deprecated.
