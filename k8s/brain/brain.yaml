@@ -39,6 +39,24 @@ spec:
           value: http://loki.monitoring.svc:3100
         - name: AEGIS_DRY_RUN
           value: "true"
+        # Live execution goes through the Go controller (it also needs DRY_RUN=false there).
+        - name: GO_CONTROLLER_URL
+          value: http://aegis-controller.aegis-system.svc:8080/api/v1/reconcile
+        - name: GO_CONTROLLER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: aegis-controller-token
+              key: token
+              optional: true
+        # Phase 6: when "true", alerts (AlertManager + Falco) are guarded, executed, verified and
+        # escalated automatically. "false" = diagnose only.
+        - name: AEGIS_AUTO_REMEDIATE
+          value: "false"
+        - name: AEGIS_ALERT_DEBOUNCE_S
+          value: "30"
+        # Keep in sync with ALLOWED_NAMESPACES in k8s/controller/controller.yaml.
+        - name: AEGIS_ALLOWED_NAMESPACES
+          value: "online-boutique,aegis-chaos"
         - name: AEGIS_SENSOR_TIMEOUT
           value: "5.0"
         - name: AEGIS_DB_DIR
