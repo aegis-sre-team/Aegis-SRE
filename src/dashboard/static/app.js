@@ -59,8 +59,59 @@ function initWebSocket() {
     };
 }
 
+// Mutating endpoints may require AEGIS_DASHBOARD_TOKEN. The token is asked for once and kept in this
+// browser's localStorage; read-only endpoints never need it.
+async function authFetch(url, opts = {}) {
+    const withToken = (token) => ({
+        ...opts,
+        headers: { ...(opts.headers || {}), ...(token ? { "X-Aegis-Token": token } : {}) },
+    });
+    let token = null;
+    try { token = localStorage.getItem("aegisToken"); } catch (e) { /* storage unavailable */ }
+    let resp = await fetch(url, withToken(token));
+    if (resp.status === 401) {
+        const entered = window.prompt("This action requires the dashboard token:");
+        if (entered) {
+            try { localStorage.setItem("aegisToken", entered); } catch (e) { /* ignore */ }
+            resp = await fetch(url, withToken(entered));
+        }
+    }
+    return resp;
+}
+
+function setPill(id, label, ok, upText, downText) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.querySelector(".pill-text").innerText = `${label}: ${ok === true ? upText : downText}`;
+    el.className = `status-pill ${ok === true ? "status-healthy" : ok === false ? "status-down" : "status-demo"}`;
+}
+
+// Status pills reflect what the server actually measured. Nothing here is hard-coded to "ONLINE".
+function updateStatusPills(data) {
+    const live = data.data_source === "live";
+    const src = document.getElementById("pill-source");
+    if (src) {
+        src.querySelector(".pill-text").innerText = live ? "DATA: LIVE CLUSTER" : "DATA: DEMO (SIMULATED)";
+        src.className = `status-pill ${live ? "status-healthy" : "status-demo"}`;
+    }
+    const sensors = data.sensors || {};
+    const c = sensors.controller, p = sensors.prometheus;
+    setPill("pill-controller", "CONTROLLER", c ? c.ok : null, "REACHABLE", c ? "UNREACHABLE" : "N/A (DEMO)");
+    setPill("pill-prometheus", "PROMETHEUS", p ? p.ok : null, "REACHABLE", p ? "UNREACHABLE" : "N/A (DEMO)");
+}
+
+const fmtPct = (v) => (v === null || v === undefined ? "n/a" : `${v}%`);
+const barWidth = (v) => (v === null || v === undefined ? 0 : Math.max(0, Math.min(100, v)));
+
 function handleServerEvent(data) {
+    if (data.event === "PIPELINE_EVENT") {
+        if (data.latest_terminal_log) {
+            appendTerminalLog(data.latest_terminal_log.level, data.latest_terminal_log.category, data.latest_terminal_log.message);
+        }
+        return;
+    }
     if (data.event === "INITIAL_STATE" || data.event === "TELEMETRY_TICK" || data.event === "ESCALATION_RESOLVED") {
+        updateStatusPills(data);
         if (data.pods) renderPodCards(data.pods);
         if (data.quarantines) renderQuarantineList(data.quarantines);
         if (data.escalations) renderEscalationsSummary(data.escalations);
@@ -91,7 +142,10 @@ function updateBannerScorecards(summary) {
     }
 }
 
+let lastPods = [];
+
 function renderPodCards(pods) {
+    lastPods = pods;
     const container = document.getElementById("pod-cards-list");
     container.innerHTML = "";
 
@@ -101,25 +155,25 @@ function renderPodCards(pods) {
         
         let statusBadgeClass = "badge-cyan";
         if (pod.status === "QUARANTINED") statusBadgeClass = "badge-red";
-        if (pod.status === "DEGRADED") statusBadgeClass = "badge-purple";
+        if (pod.status === "DEGRADED" || pod.status === "FAILED") statusBadgeClass = "badge-purple";
 
         card.innerHTML = `
             <div class="pod-header">
-                <div class="pod-name">${pod.pod_name}</div>
+                <div class="pod-name">${pod.pod_name}${pod.namespace ? ` <small>(${pod.namespace})</small>` : ""}</div>
                 <span class="badge ${statusBadgeClass}">${pod.status}</span>
             </div>
             <div class="pod-metrics">
                 <div class="metric-bar-group">
-                    <div class="bar-label"><span>CPU</span> <strong>${pod.cpu_pct}%</strong></div>
-                    <div class="progress-track"><div class="progress-fill" style="width: ${pod.cpu_pct}%"></div></div>
+                    <div class="bar-label"><span>CPU</span> <strong>${fmtPct(pod.cpu_pct)}</strong></div>
+                    <div class="progress-track"><div class="progress-fill" style="width: ${barWidth(pod.cpu_pct)}%"></div></div>
                 </div>
                 <div class="metric-bar-group">
-                    <div class="bar-label"><span>MEM</span> <strong>${pod.mem_pct}%</strong></div>
-                    <div class="progress-track"><div class="progress-fill" style="width: ${pod.mem_pct}%"></div></div>
+                    <div class="bar-label"><span>MEM</span> <strong>${fmtPct(pod.mem_pct)}</strong></div>
+                    <div class="progress-track"><div class="progress-fill" style="width: ${barWidth(pod.mem_pct)}%"></div></div>
                 </div>
                 <div class="metric-bar-group">
-                    <div class="bar-label"><span>ERR</span> <strong>${pod.error_rate_pct}%</strong></div>
-                    <div class="progress-track"><div class="progress-fill" style="width: ${Math.min(100, pod.error_rate_pct * 10)}%; background: var(--neon-alert)"></div></div>
+                    <div class="bar-label"><span>ERR</span> <strong>${fmtPct(pod.error_rate_pct)}</strong></div>
+                    <div class="progress-track"><div class="progress-fill" style="width: ${barWidth(pod.error_rate_pct === null || pod.error_rate_pct === undefined ? null : pod.error_rate_pct * 10)}%; background: var(--neon-alert)"></div></div>
                 </div>
             </div>
         `;
@@ -193,7 +247,7 @@ function appendTerminalLog(level, category, message) {
 async function triggerChaos(chaosType) {
     appendTerminalLog("WARN", "USER", `Triggering chaos injection '${chaosType}' from UI...`);
     try {
-        const resp = await fetch("/api/v1/chaos/trigger", {
+        const resp = await authFetch("/api/v1/chaos/trigger", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ pod_name: "aegis-storefront-prod-1", chaos_type: chaosType })
@@ -214,19 +268,33 @@ async function triggerChaos(chaosType) {
 async function openForensicsModal(podName) {
     try {
         const resp = await fetch(`/api/v1/forensics/${podName}`);
-        const forensics = await resp.json();
-
         const bodyEl = document.getElementById("forensics-modal-body");
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            bodyEl.innerHTML = `<div><strong>No forensics available:</strong> ${err.detail || `HTTP ${resp.status}`}</div>`;
+            document.getElementById("forensics-modal").style.display = "flex";
+            return;
+        }
+        const forensics = await resp.json();
+        const source = forensics.demo ? "DEMO SAMPLE (not real evidence)" : (forensics.data_source === "cluster" ? "captured from the cluster" : "no cluster data captured");
+        const procs = forensics.process_tree || forensics.simulated_process_tree || [];
         bodyEl.innerHTML = `
-            <div><strong>Target Pod:</strong> ${forensics.target_pod}</div>
+            <div><strong>Target Pod:</strong> ${forensics.target_pod} ${forensics.namespace ? `(${forensics.namespace})` : ""}</div>
+            <div><strong>Source:</strong> ${source}</div>
             <div><strong>Trigger Reason:</strong> ${forensics.trigger_reason}</div>
-            <div><strong>MITRE Technique:</strong> ${forensics.mitre_technique}</div>
-            
+            <div><strong>MITRE Technique:</strong> ${forensics.mitre_technique || "n/a"}</div>
+
             <h4 style="margin-top: 10px;">Process Tree Snapshot:</h4>
-            <pre class="code-box">${JSON.stringify(forensics.simulated_process_tree, null, 2)}</pre>
-            
-            <h4 style="margin-top: 10px;">TCP Socket Connections:</h4>
-            <pre class="code-box">${JSON.stringify(forensics.simulated_tcp_sockets, null, 2)}</pre>
+            <pre class="code-box">${procs.length ? JSON.stringify(procs, null, 2) : "(none captured)"}</pre>
+
+            <h4 style="margin-top: 10px;">Kubernetes Events:</h4>
+            <pre class="code-box">${(forensics.events || []).join("\n") || "(none)"}</pre>
+
+            <h4 style="margin-top: 10px;">Container Logs (tail):</h4>
+            <pre class="code-box">${Object.entries(forensics.logs || {}).map(([c, l]) => `# ${c}\n${l.join("\n")}`).join("\n\n") || "(none)"}</pre>
+
+            <h4 style="margin-top: 10px;">Collection Errors:</h4>
+            <pre class="code-box">${(forensics.errors || []).join("\n") || "(none)"}</pre>
         `;
 
         document.getElementById("forensics-modal").style.display = "flex";
@@ -267,17 +335,25 @@ async function executeHITLAction(actionType) {
     appendTerminalLog("WARN", "HITL", `Human operator dispatching action '${actionType}' for '${podName}'...`);
 
     try {
-        const resp = await fetch("/api/v1/escalation/resolve", {
+        // The server needs the pod's namespace (live mode refuses to guess one).
+        const known = lastPods.find(p => p.pod_name === podName);
+        const resp = await authFetch("/api/v1/escalation/resolve", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 incident_id: incId,
                 target_pod: podName,
                 action: actionType,
-                notes: notes
+                notes: notes,
+                namespace: known && known.namespace ? known.namespace : null
             })
         });
-        const result = await resp.json();
+        const result = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            // Do not report success or close the drawer: the operator must see that nothing happened.
+            appendTerminalLog("ERROR", "HITL", `Action '${actionType}' on '${podName}' FAILED: ${result.detail || "HTTP " + resp.status}`);
+            return;
+        }
         appendTerminalLog("SUCCESS", "HITL", result.message);
         closeHITLDrawer();
         fetchInitialState();
@@ -300,7 +376,7 @@ async function triggerChaos(chaosType, podName = "aegis-storefront-prod-1") {
     }
 
     try {
-        const resp = await fetch("/api/v1/chaos/trigger", {
+        const resp = await authFetch("/api/v1/chaos/trigger", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

@@ -629,3 +629,7 @@ body {
     font-family: var(--font-mono);
     font-size: 11px;
 }
+
+/* Honest status pills (Phase 7): colour reflects what was actually measured. */
+.status-pill.status-down { border-color: var(--neon-alert); color: var(--neon-alert); }
+.status-pill.status-demo { border-color: var(--neon-purple); color: var(--neon-purple); }

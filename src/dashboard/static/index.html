@@ -23,14 +23,14 @@
             </div>
 
             <div class="system-status-pills">
-                <div class="status-pill status-healthy">
-                    <span class="pulse-dot"></span> CLUSTER: K3s ACTIVE
+                <div class="status-pill status-demo" id="pill-source">
+                    <span class="pulse-dot"></span> <span class="pill-text">DATA: CONNECTING...</span>
                 </div>
-                <div class="status-pill status-ebpf">
-                    <span class="pulse-dot"></span> eBPF: CILIUM CNI
+                <div class="status-pill status-demo" id="pill-controller">
+                    <span class="pulse-dot"></span> <span class="pill-text">CONTROLLER: --</span>
                 </div>
-                <div class="status-pill status-brain">
-                    <span class="pulse-dot"></span> AI BRAIN: ONLINE
+                <div class="status-pill status-demo" id="pill-prometheus">
+                    <span class="pulse-dot"></span> <span class="pill-text">PROMETHEUS: --</span>
                 </div>
             </div>
         </header>

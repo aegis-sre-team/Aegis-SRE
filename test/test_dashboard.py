@@ -1,3 +1,4 @@
+import support  # noqa: F401  (hermetic env; must precede src imports)
 import unittest
 import os
 from fastapi.testclient import TestClient
@@ -11,7 +12,12 @@ class TestDashboardServer(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from src.dashboard import server
+        support.start_patches(cls, support.sensor_patches(server.diagnostic_engine))
         cls.client = TestClient(app)
+
+    def setUp(self):
+        support.reset_restart_state()
 
     def test_dashboard_static_index_html(self):
         """Test GET / returns 200 OK and serves index.html."""
