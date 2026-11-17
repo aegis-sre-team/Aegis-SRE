@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -14,6 +15,31 @@ class SensorDarkError(Exception):
         self.sensor = sensor
         self.detail = detail
         super().__init__(f"{sensor} dark: {detail}")
+
+
+def escape_label_value(value: str) -> str:
+    """Escape a value for use inside a double-quoted PromQL/LogQL label matcher."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+
+_NS_ANY = re.compile(r"(?:^|[\s(,\[])ns=[^\s)\],]+")
+
+
+def _ns_exact(namespace: str):
+    """Matches the token `ns=<namespace>` only at a token boundary (so `ns=production` is not `ns=prod`)."""
+    return re.compile(r"(?:^|[\s(,\[])ns=" + re.escape(namespace.lower()) + r"(?=[\s)\],]|$)")
+
+
+def _pod_matcher(pod_name: str, namespace: Optional[str] = None) -> str:
+    """Label matcher for one pod.
+
+    With a namespace the match is EXACT (namespace + pod), so another namespace's pod or a pod whose
+    name merely contains this one can never contribute to the evidence. Without a namespace (legacy
+    callers that only know a deployment prefix) it is an escaped prefix match.
+    """
+    if namespace:
+        return f'namespace="{escape_label_value(namespace)}",pod="{escape_label_value(pod_name)}"'
+    return f'pod=~"{escape_label_value(re.escape(pod_name))}.*"'
 
 
 class TelemetryCollector:
@@ -107,62 +133,58 @@ class TelemetryCollector:
             raise SensorDarkError("prometheus", f"query status={payload.get('status')}")
         return payload.get("data", {}).get("result", [])
 
-    def fetch_prometheus_metrics(self, pod_name: str) -> dict:
+    def fetch_prometheus_metrics(self, pod_name: str, namespace: Optional[str] = None) -> dict:
         """
-        Query live cAdvisor-backed metrics for the target pod.
-        Returns zeros only when the sensor answered and series are empty — never fake healthy baselines.
+        Query live cAdvisor-backed metrics for the target pod (exact match when a namespace is given).
+        A metric whose series do not exist is reported as None ("no data"), never as 0 or "normal".
         Raises SensorDarkError when Prometheus is unreachable.
         """
         metrics_data = {
-            "total_requests": 0,
-            "error_500_count": 0,
-            "avg_latency_ms": 0.0,
-            "memory_mb": 0.0,
-            "memory_limit_mb": 0.0,
-            "memory_pct": 0.0,
-            "cpu_usage_pct": 0.0,
+            "total_requests": None,
+            "error_500_count": None,
+            "avg_latency_ms": None,
+            "memory_mb": None,
+            "memory_limit_mb": None,
+            "memory_pct": None,
+            "cpu_usage_pct": None,
             "sensor_ok": False,
             "source": "prometheus+cadvisor",
         }
+        sel = _pod_matcher(pod_name, namespace)
+        base = f'{sel},container!="",container!="POD"'
 
         try:
             # Prefer cAdvisor CPU ratio vs limit (Boutique /metrics often broken gRPC)
             cpu_q = (
-                f'(sum(rate(container_cpu_usage_seconds_total{{pod=~".*{pod_name}.*",container!="",container!="POD"}}[1m])) '
-                f'/ sum(container_spec_cpu_quota{{pod=~".*{pod_name}.*",container!="",container!="POD"}} '
-                f'/ container_spec_cpu_period{{pod=~".*{pod_name}.*",container!="",container!="POD"}})) * 100'
+                f'(sum(rate(container_cpu_usage_seconds_total{{{base}}}[1m])) '
+                f'/ sum(container_spec_cpu_quota{{{base}}} / container_spec_cpu_period{{{base}}})) * 100'
             )
             cpu_res = self._prom_query(cpu_q)
             if cpu_res:
                 metrics_data["cpu_usage_pct"] = round(float(cpu_res[0]["value"][1]), 1)
 
-            mem_q = f'sum(container_memory_working_set_bytes{{pod=~".*{pod_name}.*",container!="",container!="POD"}})/1024/1024'
+            mem_q = f'sum(container_memory_working_set_bytes{{{base}}})/1024/1024'
             mem_res = self._prom_query(mem_q)
             if mem_res:
                 metrics_data["memory_mb"] = round(float(mem_res[0]["value"][1]), 1)
 
-            lim_q = f'sum(container_spec_memory_limit_bytes{{pod=~".*{pod_name}.*",container!="",container!="POD"}})/1024/1024'
+            lim_q = f'sum(container_spec_memory_limit_bytes{{{base}}})/1024/1024'
             lim_res = self._prom_query(lim_q)
             if lim_res:
                 lim = float(lim_res[0]["value"][1])
                 # Ignore absurdly large "unlimited" specs
                 if 0 < lim < 1_000_000:
                     metrics_data["memory_limit_mb"] = round(lim, 1)
-                    if lim > 0:
-                        metrics_data["memory_pct"] = round(
-                            (metrics_data["memory_mb"] / lim) * 100.0, 1
-                        )
+                    if metrics_data["memory_mb"] is not None:
+                        metrics_data["memory_pct"] = round((metrics_data["memory_mb"] / lim) * 100.0, 1)
 
             # Optional HTTP counters if present (Boutique rarely exposes them)
             try:
-                req_res = self._prom_query(f'sum(http_requests_total{{pod=~".*{pod_name}.*"}})')
+                req_res = self._prom_query(f'sum(http_requests_total{{{sel}}})')
                 if req_res:
                     metrics_data["total_requests"] = int(float(req_res[0]["value"][1]))
-                err_res = self._prom_query(
-                    f'sum(http_requests_total{{pod=~".*{pod_name}.*",status=~"5.."}})'
-                )
-                if err_res:
-                    metrics_data["error_500_count"] = int(float(err_res[0]["value"][1]))
+                    err_res = self._prom_query(f'sum(http_requests_total{{{sel},status=~"5.."}})')
+                    metrics_data["error_500_count"] = int(float(err_res[0]["value"][1])) if err_res else 0
             except SensorDarkError:
                 pass
 
@@ -177,7 +199,7 @@ class TelemetryCollector:
 
         return metrics_data
 
-    def fetch_loki_logs(self, pod_name: str, limit: int = 15) -> List[str]:
+    def fetch_loki_logs(self, pod_name: str, limit: int = 15, namespace: Optional[str] = None) -> List[str]:
         """
         Query Loki for recent pod logs. Empty list is honest (no lines).
         Raises SensorDarkError when Loki is unreachable.
@@ -189,14 +211,15 @@ class TelemetryCollector:
         # Prefer exact-ish pod match; optional app label only if pod name looks like a
         # deployment prefix with hash (app = first label segment only when long enough
         # and not a shared namespace prefix like "chaos").
-        queries = [f'{{pod=~".*{pod_name}.*"}}']
+        queries = [f'{{{_pod_matcher(pod_name, namespace)}}}']
         parts = pod_name.split("-") if pod_name else []
         if len(parts) >= 2:
             # Online Boutique style: frontend-xxxxx -> app=frontend
             # Skip shared prefixes used by many workloads in aegis-chaos.
             app_label = parts[0]
             if app_label not in {"chaos", "aegis"} and len(app_label) >= 4:
-                queries.append(f'{{app="{app_label}"}}')
+                scope = f'namespace="{escape_label_value(namespace)}",' if namespace else ""
+                queries.append(f'{{{scope}app="{escape_label_value(app_label)}"}}')
 
         try:
             for query in queries:
@@ -228,6 +251,7 @@ class TelemetryCollector:
         pod_name: str,
         limit: int = 25,
         security_context: bool = False,
+        namespace: Optional[str] = None,
     ) -> List[str]:
         """
         Query Loki stream {{app="falco"}} for security events.
@@ -265,6 +289,8 @@ class TelemetryCollector:
                 for entry in stream.get("values", []):
                     log_msg = entry[1]
                     lower = log_msg.lower()
+                    if namespace and _NS_ANY.search(lower) and not _ns_exact(namespace).search(lower):
+                        continue  # same pod name in another namespace
                     pod_hit = bool(pod_token) and pod_token in lower
                     security_hit = any(m in lower for m in security_markers)
                     if pod_hit:

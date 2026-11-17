@@ -54,7 +54,7 @@ class LLMClient:
                 if start_idx != -1 and end_idx != -1:
                     raw_json = raw_json[start_idx:end_idx+1]
                 verdict = json.loads(raw_json)
-                verdict.setdefault("confidence", 0.85)
+                verdict.setdefault("confidence", 0.0)
                 verdict["_ai_provider"] = f"Ollama ({target_model})"
                 self._persist_incident_db(verdict)
                 return verdict
@@ -214,6 +214,23 @@ class LLMClient:
                 ),
             }
 
+        elif "crashloop" in alert_line:
+            # Only the alert line is trusted here (evidence text comes from the workload).
+            return {
+                "incident_id": f"INC-CRASH-{int(time.time())}",
+                "target_pod": target_pod,
+                "problem_type": "OPERATIONAL_BUG",
+                "threat_level": "HIGH",
+                "mitre_technique": None,
+                "root_cause": f"Crash loop detected on '{target_pod}' (repeated container restarts)",
+                "recommended_action": "RESTART_POD",
+                "confidence": 0.80,
+                "reasoning": (
+                    f"'{target_pod}' keeps restarting. One controlled rollout restart is attempted; the "
+                    "per-workload restart budget escalates to a human if it keeps crashing."
+                ),
+            }
+
         else:
             return {
                 "incident_id": f"INC-SRE-{int(time.time())}",
@@ -246,7 +263,7 @@ class LLMClient:
                     root_cause=verdict.get("root_cause", ""),
                     recommended_action=verdict.get("recommended_action", "ESCALATE"),
                     final_action=verdict.get("recommended_action", "ESCALATE"),
-                    confidence=float(verdict.get("confidence", 0.90)),
+                    confidence=float(verdict.get("confidence", 0.0) or 0.0),
                     status="OPEN"
                 )
                 session.add(rec)

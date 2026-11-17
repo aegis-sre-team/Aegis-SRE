@@ -26,34 +26,54 @@ class MetricSerializer:
                 f"Status: SENSOR_DARK — metrics unavailable (fail-closed; no invented baselines)"
             )
 
-        total_requests = raw_metrics.get("total_requests", 0)
-        error_500_count = raw_metrics.get("error_500_count", 0)
-        avg_latency_ms = raw_metrics.get("avg_latency_ms", 0.0)
-        memory_mb = raw_metrics.get("memory_mb", 0.0)
-        cpu_usage_pct = raw_metrics.get("cpu_usage_pct", 0.0)
-
-        if total_requests > 0:
-            error_rate = (error_500_count / total_requests) * 100.0
-        else:
-            error_rate = 0.0
-
-        memory_pct = raw_metrics.get("memory_pct")
-        if memory_pct is None:
-            memory_limit_mb = raw_metrics.get("memory_limit_mb") or 0.0
-            memory_pct = (memory_mb / memory_limit_mb) * 100.0 if memory_limit_mb > 0 else 0.0
-
-        cpu_status = "ELEVATED" if cpu_usage_pct >= cls.CPU_THRESHOLD_ELEVATED else "NORMAL"
-        ram_status = "NEAR OOM" if memory_pct >= cls.RAM_THRESHOLD_OOM else "NORMAL"
-        error_status = "HIGH" if error_rate >= cls.ERROR_RATE_HIGH else "NORMAL"
+        total_requests = raw_metrics.get("total_requests")
+        error_500_count = raw_metrics.get("error_500_count")
+        avg_latency_ms = raw_metrics.get("avg_latency_ms")
+        memory_mb = raw_metrics.get("memory_mb")
+        cpu_usage_pct = raw_metrics.get("cpu_usage_pct")
         source = raw_metrics.get("source", "prometheus")
 
-        summary = (
+        # None means "the sensor answered but has no series": say so, never show a healthy-looking 0.
+        if cpu_usage_pct is None:
+            cpu_line = "CPU Usage: no data (sensor answered, no series)"
+        else:
+            cpu_status = "ELEVATED" if cpu_usage_pct >= cls.CPU_THRESHOLD_ELEVATED else "NORMAL"
+            cpu_line = f"CPU Usage: {cpu_usage_pct:.1f}% (Status: {cpu_status})"
+
+        memory_pct = raw_metrics.get("memory_pct")
+        if memory_pct is None and memory_mb is not None:
+            memory_limit_mb = raw_metrics.get("memory_limit_mb") or 0.0
+            memory_pct = (memory_mb / memory_limit_mb) * 100.0 if memory_limit_mb > 0 else None
+        if memory_mb is None:
+            mem_line = "Memory Allocation: no data (sensor answered, no series)"
+        elif memory_pct is None:
+            mem_line = f"Memory Allocation: {memory_mb:.1f} MB (no limit data)"
+        else:
+            ram_status = "NEAR OOM" if memory_pct >= cls.RAM_THRESHOLD_OOM else "NORMAL"
+            mem_line = f"Memory Allocation: {memory_mb:.1f} MB ({memory_pct:.1f}%, Status: {ram_status})"
+
+        if total_requests is None:
+            http_line = "HTTP Traffic: no data (no http_requests_total series)"
+        else:
+            errors = error_500_count or 0
+            error_rate = (errors / total_requests) * 100.0 if total_requests > 0 else 0.0
+            error_status = "HIGH" if error_rate >= cls.ERROR_RATE_HIGH else "NORMAL"
+            http_line = (
+                f"HTTP Traffic: {total_requests} Total Requests | 500 Errors: {errors} "
+                f"({error_rate:.1f}%, Status: {error_status})"
+            )
+
+        latency_line = (
+            "Avg Request Latency: no data" if avg_latency_ms is None
+            else f"Avg Request Latency: {avg_latency_ms:.1f} ms"
+        )
+
+        return (
             f"[PROMETHEUS METRIC CONTEXT]\n"
             f"Target Pod: {pod_name}\n"
             f"Source: {source}\n"
-            f"CPU Usage: {cpu_usage_pct:.1f}% (Status: {cpu_status})\n"
-            f"Memory Allocation: {memory_mb:.1f} MB ({memory_pct:.1f}%, Status: {ram_status})\n"
-            f"HTTP Traffic: {total_requests} Total Requests | 500 Errors: {error_500_count} ({error_rate:.1f}%, Status: {error_status})\n"
-            f"Avg Request Latency: {avg_latency_ms:.1f} ms"
+            f"{cpu_line}\n"
+            f"{mem_line}\n"
+            f"{http_line}\n"
+            f"{latency_line}"
         )
-        return summary

@@ -33,13 +33,16 @@ class DiagnosticEngine:
         self.llm = LLMClient()
         self.guardrail = guardrail or GuardrailEngine()
 
-    def _escalate_dark(self, pod_name: str, alert_type: str, dark_detail: str) -> dict:
+    def _escalate_dark(
+        self, pod_name: str, alert_type: str, dark_detail: str, namespace: Optional[str] = None
+    ) -> dict:
         """Fail closed when sensors cannot be trusted."""
         import time
 
         verdict = {
             "incident_id": f"INC-DARK-{int(time.time())}",
             "target_pod": pod_name,
+            "namespace": namespace,
             "problem_type": "SENSOR_DARK",
             "threat_level": "HIGH",
             "mitre_technique": None,
@@ -73,6 +76,9 @@ class DiagnosticEngine:
         pod_name: str = "aegis-target-app",
         alert_type: str = "HTTP_500_SPIKE",
         fail_closed: bool = True,
+        namespace: Optional[str] = None,
+        reserve_budget: bool = True,
+        trusted_signal: bool = False,
     ) -> dict:
         """
         Executes end-to-end AI diagnosis pipeline for an incident and validates output through Guardrails.
@@ -83,7 +89,7 @@ class DiagnosticEngine:
         if fail_closed and self.collector.any_critical_dark():
             detail = str(self.collector.sensor_health)
             logger.error(f"Sensors dark — escalating: {detail}")
-            return self._escalate_dark(pod_name, alert_type, detail)
+            return self._escalate_dark(pod_name, alert_type, detail, namespace)
 
         alert_l = (alert_type or "").lower()
         security_context = any(
@@ -99,15 +105,16 @@ class DiagnosticEngine:
         )
 
         try:
-            raw_metrics = self.collector.fetch_prometheus_metrics(pod_name)
-            loki_logs = self.collector.fetch_loki_logs(pod_name)
+            raw_metrics = self.collector.fetch_prometheus_metrics(pod_name, namespace=namespace)
+            loki_logs = self.collector.fetch_loki_logs(pod_name, namespace=namespace)
             falco_events = self.collector.fetch_falco_alerts(
                 pod_name,
                 security_context=security_context,
+                namespace=namespace,
             )
         except SensorDarkError as e:
             if fail_closed:
-                return self._escalate_dark(pod_name, alert_type, str(e))
+                return self._escalate_dark(pod_name, alert_type, str(e), namespace)
             raise
 
         metric_summary = MetricSerializer.serialize_prometheus_metrics(pod_name, raw_metrics)
@@ -132,7 +139,13 @@ class DiagnosticEngine:
 
         verdict = self.llm.generate_json_diagnosis(SYSTEM_DIAGNOSTIC_PROMPT, user_prompt)
         verdict["target_pod"] = pod_name
-        verdict.setdefault("confidence", 0.85)
+        # The namespace is trusted only from the alert; never from the LLM's output.
+        verdict["namespace"] = namespace
+        verdict.setdefault("confidence", 0.0)
+        if trusted_signal:
+            # Only a TRUSTED source (Falco ingest, our AlertManager rules) may force a security verdict;
+            # an alert_type string typed into the public API must not.
+            verdict = self._apply_trusted_signal_policy(verdict, alert_type)
         verdict["sensor_health"] = self.collector.sensor_health
         verdict["rag_preview"] = rag_context[:500]
         logger.info(
@@ -140,7 +153,7 @@ class DiagnosticEngine:
             f"{verdict.get('recommended_action')} (confidence={verdict.get('confidence')})"
         )
 
-        decision = self.guardrail.validate_verdict(verdict)
+        decision = self.guardrail.validate_verdict(verdict, reserve_budget=reserve_budget)
         verdict["decision_object"] = decision
         verdict["guardrail_validation"] = {
             "approved": decision.approved,
@@ -153,6 +166,36 @@ class DiagnosticEngine:
             "schema_valid": decision.schema_valid,
         }
         verdict["recommended_action"] = decision.final_action
+        return verdict
+
+    @staticmethod
+    def _apply_trusted_signal_policy(verdict: dict, alert_type: str) -> dict:
+        """Deterministic rules beat the LLM when the signal itself is trusted.
+
+        An alert type starting with "falco" means an Aegis Falco rule fired for this pod (kernel-level
+        evidence, not workload-supplied text). The model may not talk that down to a routine bug:
+        it is a SECURITY_ATTACK and the action is quarantine (or an explicit human escalation).
+        """
+        if not (alert_type or "").lower().startswith("falco"):
+            return verdict
+        changed = False
+        if verdict.get("problem_type") != "SECURITY_ATTACK":
+            verdict["problem_type"] = "SECURITY_ATTACK"
+            changed = True
+        if verdict.get("recommended_action") not in ("CILIUM_QUARANTINE_EBPF", "ESCALATE"):
+            verdict["recommended_action"] = "CILIUM_QUARANTINE_EBPF"
+            changed = True
+        if changed:
+            try:
+                confidence = float(verdict.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            verdict["confidence"] = max(confidence, 0.90)
+            verdict["_trusted_signal_override"] = True
+            verdict["reasoning"] = (
+                f"{verdict.get('reasoning', '')} [Policy override: a Falco security rule fired for this pod, so "
+                "the verdict is forced to SECURITY_ATTACK / quarantine regardless of the model output.]"
+            ).strip()
         return verdict
 
     def rag_for_alert(self, alert_type: str, top_k: int = 2) -> str:
