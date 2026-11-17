@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -15,103 +15,79 @@ import (
 )
 
 func main() {
-	log.Println("Starting Aegis-SRE Go Action Controller Service (Phase 5)...")
+	log.Println("Aegis-SRE Go action controller starting")
 
-	var reconciler *ActionReconciler
-	config, err := getKubeConfig()
+	r, err := buildReconciler()
 	if err != nil {
-		log.Printf("Warning: Unable to load kubeconfig (running in offline/dry-run mode): %v", err)
-		reconciler = NewActionReconciler(nil, nil)
-	} else {
-		clientset, err := kubernetes.NewForConfig(config)
-		if err != nil {
-			log.Printf("Error creating kubernetes clientset (falling back to dry-run): %v", err)
-		}
-		dynClient, err := dynamic.NewForConfig(config)
-		if err != nil {
-			log.Printf("Error creating dynamic client (falling back to dry-run): %v", err)
-		}
-		reconciler = NewActionReconciler(clientset, dynClient)
-		log.Println("Aegis-SRE Go Controller connected successfully to K8s cluster API.")
+		log.Fatalf("startup failed: %v", err)
 	}
-
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "healthy", "service": "aegis-go-controller"})
-	})
-
-	http.HandleFunc("/api/v1/reconcile", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method != http.MethodPost {
-			http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
-			return
-		}
-
-		var req ActionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"Invalid JSON payload: %v"}`, err), http.StatusBadRequest)
-			return
-		}
-
-		log.Printf("[GO-CONTROLLER INGEST] Received Action Request: Action=%s Target=%s Approved=%t", req.FinalAction, req.TargetPod, req.Approved)
-
-		if reconciler.KubeClient == nil {
-			log.Printf("[GO-CONTROLLER DRY-RUN EXECUTE] Simulated %s on pod %s (Reason: %s)", req.FinalAction, req.TargetPod, req.Reason)
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"status":    "success",
-				"mode":      "dry_run",
-				"action":    req.FinalAction,
-				"target":    req.TargetPod,
-				"message":   "Executed in Go Controller Dry-Run Mode",
-			})
-			return
-		}
-
-		err := reconciler.ReconcileAction(context.Background(), req)
-		if err != nil {
-			log.Printf("[GO-CONTROLLER ERROR] Reconcile failed for %s: %v", req.TargetPod, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"status":  "error",
-				"error":   err.Error(),
-				"target":  req.TargetPod,
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "success",
-			"mode":    "k8s_cluster",
-			"action":  req.FinalAction,
-			"target":  req.TargetPod,
-			"message": "Executed successfully via client-go K8s API",
-		})
-	})
+	token := os.Getenv("CONTROLLER_TOKEN")
+	if token == "" {
+		log.Println("WARNING: CONTROLLER_TOKEN is empty; the API is unauthenticated (acceptable only for local development)")
+	}
+	if r.DryRun {
+		log.Println("DRY_RUN=true: actions are validated and reported but never applied")
+	} else {
+		log.Println("DRY_RUN=false: LIVE mode, actions WILL change the cluster")
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
+	log.Printf("listening on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, newServer(r, token)))
+}
 
-	log.Printf("Go Controller listening for reconcile requests on :%s...", port)
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		log.Fatalf("Go Controller server failed: %v", err)
+// buildReconciler wires clients and configuration from the environment. Safe defaults:
+// dry-run on, replica cap 4, no namespace allowlist (protected namespaces always apply).
+func buildReconciler() (*ActionReconciler, error) {
+	var r *ActionReconciler
+	cfg, err := getKubeConfig()
+	if err != nil {
+		log.Printf("WARNING: no kubeconfig (%v); running offline in dry-run mode", err)
+		r = NewActionReconciler(nil, nil)
+	} else {
+		clientset, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("kubernetes client: %w", err)
+		}
+		dyn, err := dynamic.NewForConfig(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("dynamic client: %w", err)
+		}
+		r = NewActionReconciler(clientset, dyn)
+		r.Exec = newSPDYExec(cfg, clientset)
+		log.Println("connected to the Kubernetes API")
 	}
+
+	r.DryRun = strings.ToLower(strings.TrimSpace(os.Getenv("DRY_RUN"))) != "false"
+	if v := os.Getenv("MAX_REPLICAS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("MAX_REPLICAS must be a positive integer, got %q", v)
+		}
+		r.MaxReplicas = int32(n)
+	}
+	if v := os.Getenv("ALLOWED_NAMESPACES"); v != "" {
+		r.AllowedNamespaces = map[string]bool{}
+		for _, ns := range strings.Split(v, ",") {
+			if ns = strings.TrimSpace(ns); ns != "" {
+				r.AllowedNamespaces[ns] = true
+			}
+		}
+	}
+	return r, nil
 }
 
 func getKubeConfig() (*rest.Config, error) {
-	config, err := rest.InClusterConfig()
-	if err == nil {
-		return config, nil
+	if cfg, err := rest.InClusterConfig(); err == nil {
+		return cfg, nil
 	}
-
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
-		homeDir, _ := os.UserHomeDir()
-		kubeconfig = fmt.Sprintf("%s/.kube/config", homeDir)
+		home, _ := os.UserHomeDir()
+		kubeconfig = fmt.Sprintf("%s/.kube/config", home)
 	}
-
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }
