@@ -31,3 +31,9 @@ kubectl scale deploy -n aegis-chaos --all --replicas=0
 ```
 
 **Falco Loki label:** pod label `app=falco` → LogQL `{app="falco"}` (matches `src/brain/collector.py`).
+
+## Added after the review (re-check on the AWS cluster)
+
+- [ ] `kubernetes-cadvisor` target is UP **with TLS verification** (`insecure_skip_verify` was removed)
+- [ ] `AegisContainerOOMKilled` and `AegisPodCrashLooping` appear under Alerts (`/rules`) alongside `AegisHighPodCPU`
+- [ ] Falco `Aegis Sensitive File Read` triggers on `/etc/shadow` but not on `/etc/passwd`
