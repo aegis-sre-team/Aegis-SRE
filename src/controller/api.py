@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
-from src.guardrails.action_schema import GuardrailDecision, validate_controller_decision
+from src.guardrails.action_schema import GuardrailDecision, is_valid_k8s_name, validate_controller_decision
+from src.guardrails.validator import GuardrailEngine
 from src.controller.executor import ActionExecutor, ActionExecutionResult
 
 logger = logging.getLogger("aegis-controller-api")
@@ -23,6 +24,7 @@ class DecisionExecutionRequest(BaseModel):
     problem_type: str
     mitre_technique: Optional[str] = None
     rate_limit_exceeded: bool = False
+    namespace: Optional[str] = None
 
 
 @router.get("/health")
@@ -52,6 +54,15 @@ async def execute_guardrail_decision(req: DecisionExecutionRequest):
         logger.warning("CONTROLLER REJECT: schema validation failed — %s", err)
         raise HTTPException(status_code=400, detail=err or "Invalid decision schema")
 
+    if not is_valid_k8s_name(parsed.target_pod) or (
+        parsed.namespace is not None and not is_valid_k8s_name(parsed.namespace)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid pod or namespace name.")
+    if parsed.final_action != "ESCALATE":
+        violation = GuardrailEngine.namespace_violation(parsed.namespace, parsed.final_action)
+        if violation:
+            raise HTTPException(status_code=403, detail=violation)
+
     try:
         decision = GuardrailDecision(
             approved=parsed.approved,
@@ -64,6 +75,7 @@ async def execute_guardrail_decision(req: DecisionExecutionRequest):
             problem_type=parsed.problem_type,
             mitre_technique=parsed.mitre_technique,
             rate_limit_exceeded=parsed.rate_limit_exceeded,
+            namespace=parsed.namespace,
         )
 
         result: ActionExecutionResult = executor.execute_decision(decision)

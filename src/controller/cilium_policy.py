@@ -1,6 +1,24 @@
+import hashlib
 import json
 import yaml
 from typing import Dict, Any, Optional
+
+# Pods are isolated by labelling them and selecting that label in the policy. Cilium endpoint
+# labels do not include the pod *name*, so selecting on a name-like label would match nothing.
+QUARANTINE_LABEL = "aegis.io/quarantine-target"
+_LABEL_VALUE_MAX = 63
+
+
+def quarantine_label_value(pod_name: str) -> str:
+    """Label value identifying one pod. Must stay identical to QuarantineLabelValue in controller/.
+
+    Kubernetes label values are capped at 63 chars. Longer names keep their first 52 chars plus
+    '-' plus the first 10 hex chars of sha256(name), which stays unique and deterministic.
+    """
+    if len(pod_name) <= _LABEL_VALUE_MAX:
+        return pod_name
+    return f"{pod_name[:52]}-{hashlib.sha256(pod_name.encode()).hexdigest()[:10]}"
+
 
 class CiliumPolicyGenerator:
     """
@@ -19,7 +37,7 @@ class CiliumPolicyGenerator:
     ) -> Dict[str, Any]:
         """
         Generates a CiliumNetworkPolicy (cilium.io/v2) manifest for kernel-level eBPF isolation.
-        An empty ingress [] and egress [] array enforces a DROP ALL policy at the eBPF layer.
+        ingressDeny/egressDeny on the "all" entity drop every packet to/from the labelled pod.
         """
         target_app = app_label if app_label else pod_name
         policy_name = f"aegis-quarantine-{pod_name}"
@@ -34,10 +52,10 @@ class CiliumPolicyGenerator:
         if reason:
             annotations["aegis.io/reason"] = reason
 
-        match_labels = {"io.kubernetes.pod.name": pod_name}
-        if app_label and app_label != pod_name:
-            match_labels["app"] = app_label
+        match_labels = {QUARANTINE_LABEL: quarantine_label_value(pod_name)}
 
+        # Explicit deny rules (not an empty allow-list): deny always wins over allow rules from
+        # other policies, and Cilium rejects a rule that has no ingress/egress rule bodies.
         policy_spec = {
             "apiVersion": "cilium.io/v2",
             "kind": "CiliumNetworkPolicy",
@@ -47,7 +65,7 @@ class CiliumPolicyGenerator:
                 "labels": {
                     "app.kubernetes.io/managed-by": "aegis-sre",
                     "aegis.io/quarantine": "true",
-                    "target-pod": pod_name
+                    "target-pod": quarantine_label_value(pod_name)
                 },
                 "annotations": annotations
             },
@@ -56,8 +74,8 @@ class CiliumPolicyGenerator:
                 "endpointSelector": {
                     "matchLabels": match_labels
                 },
-                "ingress": [],  # Deny ALL incoming traffic at eBPF layer
-                "egress": []    # Deny ALL outgoing traffic at eBPF layer
+                "ingressDeny": [{"fromEntities": ["all"]}],
+                "egressDeny": [{"toEntities": ["all"]}]
             }
         }
         return policy_spec
@@ -116,7 +134,8 @@ class CiliumPolicyGenerator:
             "namespace": namespace,
             "target_pod": pod_name,
             "action": "UNQUARANTINE_POD",
-            "command": f"kubectl delete ciliumnetworkpolicy {policy_name} -n {namespace}"
+            "command": f"kubectl delete ciliumnetworkpolicy {policy_name} -n {namespace}",
+            "label_to_remove": QUARANTINE_LABEL
         }
 
     @classmethod

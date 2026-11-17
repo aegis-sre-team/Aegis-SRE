@@ -1,3 +1,4 @@
+import support  # noqa: F401  (hermetic env; must precede src imports)
 import unittest
 import os
 import json
@@ -47,12 +48,50 @@ class TestActionController(unittest.TestCase):
         self.assertEqual(policy["kind"], "CiliumNetworkPolicy")
         self.assertEqual(policy["metadata"]["name"], "aegis-quarantine-vulnerable-service-abc12")
         self.assertEqual(policy["metadata"]["annotations"]["aegis.io/mitre-ttp"], "T1059")
-        self.assertEqual(policy["spec"]["ingress"], [])
-        self.assertEqual(policy["spec"]["egress"], [])
-
         yaml_str = CiliumPolicyGenerator.to_yaml(policy)
         self.assertIn("kind: CiliumNetworkPolicy", yaml_str)
-        self.assertIn("ingress: []", yaml_str)
+        self.assertIn("ingressDeny", yaml_str)
+
+    def test_label_value_short_name_unchanged(self):
+        from src.controller.cilium_policy import quarantine_label_value
+
+        self.assertEqual(quarantine_label_value("cartservice-6f7d8c9b5-x2k4p"), "cartservice-6f7d8c9b5-x2k4p")
+
+    def test_label_value_long_name_is_63_chars_and_stable(self):
+        from src.controller.cilium_policy import quarantine_label_value
+
+        name = "pod-" + "0123456789" * 8  # 84 chars
+        expected = "pod-012345678901234567890123456789012345678901234567-e7d54e8fa2"
+        self.assertEqual(len(expected), 63)
+        self.assertEqual(quarantine_label_value(name), expected)
+        self.assertEqual(quarantine_label_value(name), expected)  # deterministic
+        self.assertNotEqual(quarantine_label_value(name + "x"), expected)  # hash covers the whole name
+
+    def test_label_value_boundary_63_chars_unchanged_64_hashed(self):
+        from src.controller.cilium_policy import quarantine_label_value
+
+        self.assertEqual(quarantine_label_value("a" * 63), "a" * 63)
+        hashed = quarantine_label_value("a" * 64)
+        self.assertEqual(len(hashed), 63)
+        self.assertNotEqual(hashed, "a" * 63)
+
+    def test_policy_uses_deny_rules_not_empty_lists(self):
+        policy = CiliumPolicyGenerator.generate_cilium_quarantine_policy(pod_name="cartservice-abc", namespace="online-boutique")
+        spec = policy["spec"]
+        self.assertEqual(spec["ingressDeny"], [{"fromEntities": ["all"]}])
+        self.assertEqual(spec["egressDeny"], [{"toEntities": ["all"]}])
+        self.assertNotIn("ingress", spec)
+        self.assertNotIn("egress", spec)
+
+    def test_policy_selector_uses_quarantine_label(self):
+        from src.controller.cilium_policy import QUARANTINE_LABEL, quarantine_label_value
+
+        pod = "pod-" + "0123456789" * 8
+        policy = CiliumPolicyGenerator.generate_cilium_quarantine_policy(pod_name=pod, namespace="aegis-chaos")
+        self.assertEqual(QUARANTINE_LABEL, "aegis.io/quarantine-target")
+        self.assertEqual(policy["spec"]["endpointSelector"]["matchLabels"], {QUARANTINE_LABEL: quarantine_label_value(pod)})
+        self.assertEqual(policy["metadata"]["namespace"], "aegis-chaos")
+        self.assertEqual(policy["metadata"]["name"], f"aegis-quarantine-{pod}")
 
     def test_execute_restart_pod(self):
         """Test RESTART_POD execution under dry-run mode."""
