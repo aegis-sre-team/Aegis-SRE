@@ -4,6 +4,8 @@
 >
 > **Canonical target:** Online Boutique (`online-boutique`) + chaos in `aegis-chaos` + control plane later in `aegis-system`.
 >
+> **Cluster move:** the original `oracle-k3s` cluster is gone. The lab is being rebuilt on AWS (`aws/README.md`). Phases 1-4 below were validated on Oracle and must be re-verified on AWS with the `k8s/PHASE*_VERIFY.md` checklists.
+>
 > **Reuse:** Existing `src/` and `controller/` code is the software base. We harden and wire it phase-by-phase; we do not treat false prior checkmarks as complete.
 
 ---
@@ -32,9 +34,9 @@ Do not start Phase N+1 until Phase N success criteria are green. No post-Phase-7
 | 2 | `config/` compose patterns | K8s Falco/Loki/Promtail/AlertManager, alert rules, Cilium | **DONE** (oracle-k3s) |
 | 3 | Brain / RAG / LLM code | Honest collector, alert ingest, prompt `confidence` | **DONE** (oracle-k3s) |
 | 4 | Guardrails + unit tests | DB-backed rate limits / decision persistence | **DONE** (oracle-k3s + Neon) |
-| 5 | Python executor + Go scaffold | `AEGIS_DRY_RUN`, Go deploy, live quarantine | **NOT DONE** |
-| 6 | Pipeline / benchmark structure | Live verify→escalate on real chaos | **NOT DONE** |
-| 7 | Dashboard UI shell | Live pods, real forensics, honest sensor health | **NOT DONE** |
+| 5 | Python executor + Go scaffold | Go controller + RBAC + manifests, forensics, live quarantine | **BUILT OFFLINE** - live verification pending (`k8s/PHASE5_VERIFY.md`) |
+| 6 | Pipeline / benchmark structure | Live verify→escalate on real chaos | **BUILT OFFLINE** - live verification pending (`k8s/PHASE6_VERIFY.md`) |
+| 7 | Dashboard UI shell | Live pods, real forensics, honest sensor health | **BUILT OFFLINE** - live verification pending (`k8s/PHASE7_VERIFY.md`) |
 
 ---
 
@@ -281,7 +283,9 @@ In-cluster: `AEGIS_DRY_RUN=true`; guardrails persist to Neon when `DATABASE_URL`
 
 **Goal:** Approved actions execute via Kubernetes API + Cilium quarantine.
 
-**Status:** NOT DONE (dry-run only today)
+**Status:** BUILT OFFLINE; NOT DONE until the live checklist passes (`k8s/PHASE5_VERIFY.md`).
+
+**What exists now:** Go controller (`controller/`) with approval/allowlist/protected-namespace checks, rollout-restart and capped scaling resolved via owner references, label-plus-deny-rule Cilium quarantine (idempotent, forensics captured first), release, `/status` and `/pods` APIs, bearer auth, Dockerfile, and least-privilege per-namespace RBAC (`k8s/controller/controller.yaml`). The Python executor sends the namespace and token, fails closed when the controller is unreachable, and persists the controller's real forensics. 40 Go tests + Python contract/manifest tests pass offline. **Not yet proven:** the controller image building, RBAC sufficiency, Cilium accepting and enforcing the deny policy, SPDY exec.
 
 ### Deliverables (to build / fix)
 
@@ -307,7 +311,9 @@ In-cluster: `AEGIS_DRY_RUN=true`; guardrails persist to Neon when `DATABASE_URL`
 
 **Goal:** Full BUG and ATTACK paths with verify → escalate.
 
-**Status:** NOT DONE
+**Status:** BUILT OFFLINE; NOT DONE until the live checklist passes (`k8s/PHASE6_VERIFY.md`).
+
+**What exists now:** `src/brain/remediation.py` (`process_alert`: diagnose, guard, act, verify, escalate), honest verification that polls the controller (a failed or unreachable check is unhealthy, never healthy), a Falco ingest endpoint (`/api/v1/alerts/falco`) with debouncing, `AEGIS_AUTO_REMEDIATE` (off by default). **Not yet proven:** Falco's `http_output` reaching the brain, real chaos driving the loop end to end.
 
 ### Deliverables (to build / fix)
 
@@ -332,7 +338,9 @@ In-cluster: `AEGIS_DRY_RUN=true`; guardrails persist to Neon when `DATABASE_URL`
 
 **Goal:** Real-time view of reasoning and cluster state.
 
-**Status:** NOT DONE (UI shell exists; data is simulated)
+**Status:** BUILT OFFLINE; NOT DONE until the live checklist passes (`k8s/PHASE7_VERIFY.md`).
+
+**What exists now:** live pod grid from the controller + Prometheus (`src/dashboard/live_state.py`), `data_source` on every payload with a clearly-labelled demo fallback, honest status pills and startup log, real forensics only (404 when none), HITL actions through the real executor, pipeline events streamed from the audit table. **Not yet proven:** how the UI looks and behaves in a browser against a live cluster.
 
 ### Deliverables (to build / fix)
 
@@ -365,4 +373,4 @@ In-cluster: `AEGIS_DRY_RUN=true`; guardrails persist to Neon when `DATABASE_URL`
 
 ---
 
-*Rebuild baseline — Phase 1–4 DONE on oracle-k3s; Phase 5–7 NOT DONE until criteria pass.*
+*Rebuild baseline - Phase 1-4 DONE on oracle-k3s (re-verify on AWS); Phase 5-7 BUILT OFFLINE, NOT DONE until their live criteria pass.*

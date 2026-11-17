@@ -11,6 +11,10 @@ Aegis-SRE acts as an adaptive immune system for clusters: it observes telemetry 
 
 ---
 
+> **Project status (read first):** the original Oracle lab is gone and is being rebuilt on AWS (`aws/README.md`). Phases 1-4 were validated on Oracle. Phases 5-7 (Go controller, verify→escalate loop, live dashboard) are built and tested offline but **not yet verified on a live cluster**; the checklists are `k8s/PHASE5_VERIFY.md`, `PHASE6_VERIFY.md`, `PHASE7_VERIFY.md`. See `PHASES.md` for the plan and `CLAUDE.md` for the architecture.
+
+---
+
 ## Why Aegis-SRE?
 
 Traditional auto-remediation often defaults to “restart the pod.” That works for a memory leak. It fails for an active intrusion — restarting under attack can wipe forensic state while the attacker still has a foothold.
