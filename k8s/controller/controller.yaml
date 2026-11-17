@@ -1,0 +1,216 @@
+# Aegis-SRE Phase 5: Go action controller (aegis-system).
+#
+# The ONLY component that mutates the cluster. Defence in depth:
+#   1. RBAC is a namespaced Role in each workload namespace (below), never a ClusterRole, so even a
+#      bug cannot touch kube-system, aegis-system or monitoring.
+#   2. The binary re-checks approval, the action allowlist, protected namespaces and ALLOWED_NAMESPACES.
+#   3. A bearer token is required; a NetworkPolicy only lets the brain/dashboard reach the API.
+#   4. DRY_RUN defaults to "true". Flip it (and the brain's AEGIS_DRY_RUN) only when going live.
+#
+# To manage another namespace: add a Role+RoleBinding for it and extend ALLOWED_NAMESPACES.
+#
+# Secret (created by aws/apply-stack.sh, or by hand):
+#   kubectl -n aegis-system create secret generic aegis-controller-token \
+#     --from-literal=token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aegis-controller
+  namespace: aegis-system
+  labels:
+    app.kubernetes.io/part-of: aegis-sre
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aegis-controller
+  namespace: online-boutique
+  labels:
+    app.kubernetes.io/part-of: aegis-sre
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["list"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["get"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "update"]
+- apiGroups: ["cilium.io"]
+  resources: ["ciliumnetworkpolicies"]
+  verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aegis-controller
+  namespace: online-boutique
+  labels:
+    app.kubernetes.io/part-of: aegis-sre
+subjects:
+- kind: ServiceAccount
+  name: aegis-controller
+  namespace: aegis-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aegis-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aegis-controller
+  namespace: aegis-chaos
+  labels:
+    app.kubernetes.io/part-of: aegis-sre
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["list"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["get"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "update"]
+- apiGroups: ["cilium.io"]
+  resources: ["ciliumnetworkpolicies"]
+  verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aegis-controller
+  namespace: aegis-chaos
+  labels:
+    app.kubernetes.io/part-of: aegis-sre
+subjects:
+- kind: ServiceAccount
+  name: aegis-controller
+  namespace: aegis-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aegis-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-controller
+  namespace: aegis-system
+  labels:
+    app: aegis-controller
+    app.kubernetes.io/part-of: aegis-sre
+    aegis.io/phase: "5"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegis-controller
+  template:
+    metadata:
+      labels:
+        app: aegis-controller
+    spec:
+      serviceAccountName: aegis-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: controller
+        image: aegis-controller:phase5
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: DRY_RUN
+          value: "true"
+        - name: MAX_REPLICAS
+          value: "4"
+        - name: ALLOWED_NAMESPACES
+          value: "online-boutique,aegis-chaos"
+        - name: CONTROLLER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: aegis-controller-token
+              key: token
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 20m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-controller
+  namespace: aegis-system
+  labels:
+    app: aegis-controller
+spec:
+  selector:
+    app: aegis-controller
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegis-controller-ingress
+  namespace: aegis-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aegis-controller
+  policyTypes: ["Ingress"]
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - key: app
+          operator: In
+          values: ["aegis-brain", "aegis-dashboard"]
+    ports:
+    - protocol: TCP
+      port: 8080
