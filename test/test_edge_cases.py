@@ -1,3 +1,4 @@
+import support  # noqa: F401  (hermetic env; must precede src imports)
 import unittest
 import os
 import json
@@ -15,6 +16,7 @@ TEST_EDGE_AUDIT = "logs/test_edge_audit.jsonl"
 class TestEdgeCasesAndSystemBehavior(unittest.TestCase):
 
     def setUp(self):
+        support.reset_restart_state()
         self.guardrail = GuardrailEngine(min_confidence_threshold=0.70, max_restarts_per_hour=3)
         self.executor = ActionExecutor(namespace="aegis-target", audit_log_path=TEST_EDGE_AUDIT, dry_run_mode=True)
 

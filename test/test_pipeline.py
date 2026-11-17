@@ -1,3 +1,4 @@
+import support  # noqa: F401  (hermetic env; must precede src imports)
 import unittest
 import os
 import json
@@ -11,6 +12,7 @@ TEST_PIPELINE_AUDIT_LOG = "logs/test_pipeline_audit.jsonl"
 class TestEndToEndPipeline(unittest.TestCase):
 
     def setUp(self):
+        support.reset_restart_state()
         self.diagnostic_engine = DiagnosticEngine()
         self.executor = ActionExecutor(
             namespace="default",
@@ -95,8 +97,8 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertEqual(exec_result.action, "CILIUM_QUARANTINE_EBPF")
         self.assertIsNotNone(exec_result.policy_applied)
         self.assertEqual(exec_result.policy_applied["kind"], "CiliumNetworkPolicy")
-        self.assertEqual(exec_result.policy_applied["spec"]["ingress"], [])
-        self.assertEqual(exec_result.policy_applied["spec"]["egress"], [])
+        self.assertEqual(exec_result.policy_applied["spec"]["ingressDeny"], [{"fromEntities": ["all"]}])
+        self.assertEqual(exec_result.policy_applied["spec"]["egressDeny"], [{"toEntities": ["all"]}])
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import support  # noqa: F401  (hermetic env; must precede src imports)
 import unittest
 import os
 import json
@@ -21,6 +22,10 @@ class TestRigorousCloudOpsBenchSuite(unittest.TestCase):
         cls.guardrail_engine = GuardrailEngine(min_confidence_threshold=0.70, max_restarts_per_hour=3)
         cls.executor = ActionExecutor(namespace="aegis-production", audit_log_path=BENCHMARK_AUDIT_PATH, dry_run_mode=True)
         cls.benchmark_results = []
+        support.reset_restart_state()
+        # Prometheus/Loki/Falco are not reachable in unit tests and the engine is fail-closed,
+        # so stand in for the sensors (healthy, with plausible evidence).
+        support.start_patches(cls, support.sensor_patches(cls.diagnostic_engine))
 
         if os.path.exists(BENCHMARK_AUDIT_PATH):
             os.remove(BENCHMARK_AUDIT_PATH)
