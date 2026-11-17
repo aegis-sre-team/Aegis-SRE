@@ -1,3 +1,4 @@
+import support  # noqa: F401  (hermetic env; must precede src imports)
 import sys
 import os
 import tempfile
@@ -31,6 +32,7 @@ class TestGuardrailEngine(unittest.TestCase):
         except Exception:
             pass
         cls._tmpdir.cleanup()
+        support.restore_default_database()
 
     def setUp(self):
         from src.db.database import SessionLocal
@@ -198,6 +200,152 @@ class TestGuardrailEngine(unittest.TestCase):
         self.assertTrue(decision.approved)
         self.assertEqual(decision.final_action, "CILIUM_QUARANTINE_EBPF")
         self.assertIn("Overrode RESTART_POD", decision.reason)
+
+    # --- namespace safety (Phase 5) -------------------------------------------------
+    def _verdict(self, action="RESTART_POD", namespace="online-boutique", **extra):
+        v = {
+            "target_pod": "cartservice-6f7d8c9b5-x2k4p",
+            "problem_type": "OPERATIONAL_BUG",
+            "recommended_action": action,
+            "confidence": 0.9,
+            "namespace": namespace,
+        }
+        v.update(extra)
+        return v
+
+    def test_namespace_propagates_to_decision(self):
+        decision = self.engine.validate_verdict(self._verdict())
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.namespace, "online-boutique")
+
+    def test_decision_namespace_is_none_when_verdict_has_none(self):
+        v = self._verdict()
+        v.pop("namespace")
+        decision = self.engine.validate_verdict(v)
+        self.assertTrue(decision.approved)
+        self.assertIsNone(decision.namespace)
+
+    def test_protected_namespace_rejected_for_every_mutating_action(self):
+        from src.guardrails import PROTECTED_NAMESPACES
+
+        self.assertEqual(
+            PROTECTED_NAMESPACES,
+            {"kube-system", "kube-public", "kube-node-lease", "aegis-system", "monitoring", "cilium-secrets"},
+        )
+        for ns in sorted(PROTECTED_NAMESPACES):
+            for action in ("RESTART_POD", "SCALE_DEPLOYMENT", "CILIUM_QUARANTINE_EBPF", "UNQUARANTINE_POD"):
+                with self.subTest(namespace=ns, action=action):
+                    d = self.engine.validate_verdict(self._verdict(action=action, namespace=ns))
+                    self.assertFalse(d.approved)
+                    self.assertEqual(d.final_action, "ESCALATE")
+                    self.assertEqual(d.state, STATE_ACTION_REJECTED)
+                    self.assertIn(ns, d.reason)
+                    self.assertEqual(d.namespace, ns)
+
+    def test_protected_namespace_does_not_consume_restart_quota(self):
+        for _ in range(5):
+            self.engine.validate_verdict(self._verdict(namespace="kube-system"))
+        d = self.engine.validate_verdict(self._verdict())
+        self.assertTrue(d.approved)
+
+    def test_escalate_is_allowed_in_protected_namespace(self):
+        d = self.engine.validate_verdict(self._verdict(action="ESCALATE", namespace="kube-system"))
+        self.assertTrue(d.approved)
+        self.assertEqual(d.final_action, "ESCALATE")
+
+    def test_allowlist_env_blocks_other_namespaces(self):
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"AEGIS_ALLOWED_NAMESPACES": "online-boutique, aegis-chaos"}):
+            ok = self.engine.validate_verdict(self._verdict(namespace="aegis-chaos"))
+            blocked = self.engine.validate_verdict(self._verdict(namespace="default"))
+        self.assertTrue(ok.approved)
+        self.assertFalse(blocked.approved)
+        self.assertEqual(blocked.state, STATE_ACTION_REJECTED)
+        self.assertIn("allowed", blocked.reason.lower())
+
+    def test_controller_schema_carries_namespace(self):
+        parsed, err = validate_controller_decision(
+            {
+                "approved": True,
+                "final_action": "RESTART_POD",
+                "state": STATE_GUARDRAIL_APPROVED,
+                "reason": "ok",
+                "confidence": 0.9,
+                "original_action": "RESTART_POD",
+                "target_pod": "x",
+                "problem_type": "OPERATIONAL_BUG",
+                "namespace": "online-boutique",
+            }
+        )
+        self.assertIsNone(err)
+        self.assertEqual(parsed.namespace, "online-boutique")
+
+    # --- hardening: workload-keyed budget, confidence, autonomous release ----------------------
+    def test_workload_key_strips_replicaset_and_statefulset_suffixes(self):
+        from src.guardrails.action_schema import workload_key
+
+        self.assertEqual(workload_key("online-boutique", "cartservice-6f7d8c9b5-x2k4p"), "online-boutique/cartservice")
+        self.assertEqual(workload_key("db", "redis-0"), "db/redis")
+        self.assertEqual(workload_key(None, "lonely"), "-/lonely")
+
+    def test_restart_budget_is_shared_across_replacement_pods(self):
+        decisions = [
+            self.engine.validate_verdict(self._verdict(target_pod=f"cartservice-6f7d8c9b5-{suffix}"))
+            for suffix in ("aaaaa", "bbbbb", "ccccc", "ddddd")
+        ]
+        self.assertEqual([d.approved for d in decisions], [True, True, True, False])
+        self.assertTrue(decisions[3].rate_limit_exceeded)
+
+    def test_restart_budget_not_shared_across_namespaces(self):
+        for suffix in ("aaaaa", "bbbbb", "ccccc"):
+            self.engine.validate_verdict(self._verdict(target_pod=f"cartservice-6f7d8c9b5-{suffix}"))
+        other = self.engine.validate_verdict(
+            self._verdict(target_pod="cartservice-6f7d8c9b5-zzzzz", namespace="aegis-chaos"))
+        self.assertTrue(other.approved)
+
+    def test_restart_budget_holds_under_concurrency(self):
+        import threading
+
+        results = []
+
+        def worker(i):
+            results.append(self.engine.validate_verdict(self._verdict(target_pod=f"cartservice-6f7d8c9b5-p{i:04d}")))
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sum(1 for d in results if d.approved), 3)
+
+    def test_missing_confidence_is_escalated_not_defaulted_upward(self):
+        v = self._verdict()
+        v.pop("confidence")
+        d = self.engine.validate_verdict(v)
+        self.assertFalse(d.approved)
+        self.assertEqual(d.final_action, "ESCALATE")
+        self.assertEqual(d.state, STATE_ESCALATE_HUMAN)
+
+    def test_garbage_or_out_of_range_confidence_is_rejected(self):
+        for bad in (1.5, -0.1, "high", [0.9]):
+            with self.subTest(confidence=bad):
+                d = self.engine.validate_verdict(self._verdict(confidence=bad))
+                self.assertFalse(d.approved)
+                self.assertFalse(d.schema_valid)
+                self.assertEqual(d.final_action, "ESCALATE")
+
+    def test_autonomous_unquarantine_is_escalated_to_a_human(self):
+        d = self.engine.validate_verdict(self._verdict(action="UNQUARANTINE_POD"))
+        self.assertFalse(d.approved)
+        self.assertEqual(d.state, STATE_ACTION_REJECTED)
+        self.assertIn("human", d.reason.lower())
+
+    def test_namespace_violation_is_public(self):
+        from src.guardrails import GuardrailEngine as G
+
+        self.assertTrue(G.namespace_violation("kube-system", "RESTART_POD"))
+        self.assertIsNone(G.namespace_violation("online-boutique", "RESTART_POD"))
 
 
 if __name__ == "__main__":
