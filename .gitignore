@@ -78,6 +78,8 @@ id_dsa*
 *.kubeconfig
 *k3s.yaml
 k3s.yaml
+# Helm values, not a kubeconfig; apply-stack.sh needs it in the repo
+!k8s/cilium/values-k3s.yaml
 kubeconfig
 oracle-k3s.yaml
 

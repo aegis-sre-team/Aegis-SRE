@@ -1,0 +1,48 @@
+# Cilium Helm values for single-node ARM K3s (Oracle originally, now AWS Graviton).
+# Primary CNI after Flannel is disabled (see INSTALL.md Path A).
+
+operator:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Match K3s default pod CIDR
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList:
+      - 10.42.0.0/16
+    clusterPoolIPv4MaskSize: 24
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+kubeProxyReplacement: false
+
+hubble:
+  enabled: false
+  relay:
+    enabled: false
+  ui:
+    enabled: false
+
+policyEnforcementMode: default
+
+# Primary CNI on single-node K3s — native routing avoids Flannel VXLAN port conflicts
+routingMode: native
+ipv4NativeRoutingCIDR: 10.42.0.0/16
+autoDirectNodeRoutes: true
+tunnelProtocol: ""
+
+ingressController:
+  enabled: false

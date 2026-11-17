@@ -2,7 +2,8 @@
 
 > **Why:** Phase 5 quarantine uses `CiliumNetworkPolicy`. Flannel (default K3s CNI) cannot enforce those policies.
 >
-> **Cluster:** `oracle-k3s` / node `aegis-primary-vnic`. Live install used **Path A** (Flannel disabled → Cilium primary, native routing).
+> **Cluster:** originally `oracle-k3s` (node `aegis-primary-vnic`, now gone). Live install used **Path A** (Flannel disabled → Cilium primary, native routing).
+> **On AWS:** `aws/bootstrap.sh` writes the K3s config before first start (no Flannel to clean up) and `aws/apply-stack.sh` runs the Helm install below with the node's real IP. Steps 1–2 are not needed there.
 
 ## Prerequisites
 
