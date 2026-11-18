@@ -20,6 +20,13 @@ var (
 	ErrNotFound            = errors.New("not found")
 	ErrNoWorkload          = errors.New("pod has no owning Deployment")
 	ErrInvalidReplicas     = errors.New("replicas must be at least 1")
+
+	// Chaos controls (see chaos.go).
+	ErrChaosDisabled     = errors.New("chaos controls are disabled (set CHAOS_ENABLED=true on the controller)")
+	ErrUnknownScenario   = errors.New("unknown chaos scenario")
+	ErrInvalidChaosState = errors.New("chaos state must be \"on\" or \"off\"")
+	ErrInvalidTTL        = errors.New("ttl_minutes must not be negative")
+	ErrNoCluster         = errors.New("no cluster connection")
 )
 
 // ActionRequest is a guardrail-approved decision received from the Aegis brain.
