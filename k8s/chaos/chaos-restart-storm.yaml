@@ -1,0 +1,57 @@
+# Restart storm: the pod starts fine, then fails about 20 seconds later, every time.
+# A restart cannot fix it. The AegisPodCrashLooping alert fires, Aegis restarts it, and after the
+# guardrail's per-workload budget (3 restarts per hour) the next restart is refused and the incident
+# escalates to a human (Review page). Expected outcome: a few restarts, then "needs a human".
+# Restricted: no secret mounts, no service account token, read-only root, aegis-chaos only.
+# Starts at 0 replicas; start and stop it from the console (or: kubectl scale ... --replicas=1).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-storm-sa
+  namespace: aegis-chaos
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-restart-storm
+  namespace: aegis-chaos
+  labels:
+    app: chaos-restart-storm
+    aegis.io/chaos: restart-storm
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: chaos-restart-storm
+  template:
+    metadata:
+      labels:
+        app: chaos-restart-storm
+        aegis.io/chaos: restart-storm
+    spec:
+      serviceAccountName: chaos-storm-sa
+      automountServiceAccountToken: false
+      containers:
+        - name: storm
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "chaos-restart-storm: up, will fail in 20s (restarting does not help)"
+              sleep 20
+              echo "chaos-restart-storm: failing now"
+              exit 1
+          resources:
+            requests:
+              memory: "16Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      restartPolicy: Always
