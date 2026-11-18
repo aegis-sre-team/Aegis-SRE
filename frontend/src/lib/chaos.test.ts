@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChaosScenario } from '../api/types'
-import { SCENARIO_INFO, SCENARIO_ORDER, scenarioState, timeLeft, visibleScenarios } from './chaos'
+import { SCENARIO_INFO, SCENARIO_ORDER, scenarioState, simulateNavLabel, timeLeft, visibleScenarios } from './chaos'
 
 const base: ChaosScenario = { id: 'cpu-spike', deployment: 'chaos-cpu-spike', installed: true, replicas: 0, ready: 0 }
 
@@ -16,6 +16,13 @@ describe('scenarioState', () => {
   })
   it('reports a ready pod as running', () => {
     expect(scenarioState({ ...base, replicas: 1, ready: 1 })).toBe('running')
+  })
+})
+
+describe('simulateNavLabel', () => {
+  it('names the page for what it does in each mode, so it is reachable in both', () => {
+    expect(simulateNavLabel(false)).toBe('Simulate')
+    expect(simulateNavLabel(true)).toBe('Chaos controls')
   })
 })
 

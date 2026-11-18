@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { Activity, FlaskConical, ScrollText, ShieldAlert, Siren, UserCheck, WifiOff } from 'lucide-react'
+import { simulateNavLabel } from '../lib/chaos'
 import { useAegis } from '../state/AegisProvider'
 import { Badge } from './bits'
 
@@ -46,12 +47,10 @@ export function Shell() {
             <ScrollText size={18} />
             <span>Audit log</span>
           </NavLink>
-          {demo && (
-            <NavLink to="/simulate">
-              <FlaskConical size={18} />
-              <span>Simulate</span>
-            </NavLink>
-          )}
+          <NavLink to="/simulate">
+            <FlaskConical size={18} />
+            <span>{simulateNavLabel(!demo)}</span>
+          </NavLink>
         </nav>
       </aside>
 

@@ -49,6 +49,11 @@ export const SCENARIO_INFO: Record<string, ScenarioInfo> = {
   },
 }
 
+/** The sidebar link to /simulate. The page exists in both modes (demo simulator, live chaos controls), so the link must too. */
+export function simulateNavLabel(live: boolean): string {
+  return live ? 'Chaos controls' : 'Simulate'
+}
+
 export function scenarioState(s: ChaosScenario): ScenarioState {
   if (!s.installed) return 'not-installed'
   if (s.replicas <= 0) return 'stopped'
