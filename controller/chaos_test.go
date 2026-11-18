@@ -7,9 +7,12 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 var chaosT0 = time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
@@ -246,6 +249,28 @@ func TestStopExpiredChaos(t *testing.T) {
 	}
 	if replicasOf(t, cs, "chaos-oom") != 1 {
 		t.Fatalf("a scenario that has not expired must keep running")
+	}
+}
+
+func TestSetChaosRetriesWhenTheDeploymentChangedUnderneath(t *testing.T) {
+	// The Deployment controller rewrites status all the time, so a Get followed by an Update can lose the race.
+	r, cs := newChaosReconciler(t, true, allChaosDeployments()...)
+	conflicts := 1
+	cs.PrependReactor("update", "deployments", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		if conflicts > 0 {
+			conflicts--
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Group: "apps", Resource: "deployments"}, "chaos-cpu-spike", errors.New("the object has been modified"))
+		}
+		return false, nil, nil
+	})
+	if _, err := r.SetChaos(context.Background(), ChaosRequest{Scenario: "cpu-spike", State: "on"}); err != nil {
+		t.Fatalf("a single write conflict must be retried, got %v", err)
+	}
+	if conflicts != 0 {
+		t.Fatalf("the conflict was never injected, so the test proved nothing")
+	}
+	if replicasOf(t, cs, "chaos-cpu-spike") != 1 {
+		t.Fatalf("the retry did not apply the change")
 	}
 }
 

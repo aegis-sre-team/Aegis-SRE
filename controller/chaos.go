@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 )
 
 // Chaos controls start and stop the fixed set of failure-injection Deployments that ship in
@@ -141,23 +142,29 @@ func (r *ActionReconciler) SetChaos(ctx context.Context, req ChaosRequest) (Chao
 		}
 	}
 
-	dep, err := r.getChaosDeployment(ctx, req.Scenario)
-	if err != nil {
-		return ChaosScenario{}, err
-	}
-	if req.State == "on" {
-		one := int32(1)
-		dep.Spec.Replicas = &one
-		if dep.Annotations == nil {
-			dep.Annotations = map[string]string{}
+	// The Deployment controller rewrites status constantly, so a plain Get+Update can lose the race
+	// ("the object has been modified"). Re-read and try again on conflict.
+	var updated *appsv1.Deployment
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		dep, err := r.getChaosDeployment(ctx, req.Scenario)
+		if err != nil {
+			return err
 		}
-		dep.Annotations[chaosExpiresAnnotation] = r.now().UTC().Add(time.Duration(ttl) * time.Minute).Format(time.RFC3339)
-	} else {
-		zero := int32(0)
-		dep.Spec.Replicas = &zero
-		delete(dep.Annotations, chaosExpiresAnnotation)
-	}
-	updated, err := r.KubeClient.AppsV1().Deployments(chaosNamespace).Update(ctx, dep, metav1.UpdateOptions{})
+		if req.State == "on" {
+			one := int32(1)
+			dep.Spec.Replicas = &one
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations[chaosExpiresAnnotation] = r.now().UTC().Add(time.Duration(ttl) * time.Minute).Format(time.RFC3339)
+		} else {
+			zero := int32(0)
+			dep.Spec.Replicas = &zero
+			delete(dep.Annotations, chaosExpiresAnnotation)
+		}
+		updated, err = r.KubeClient.AppsV1().Deployments(chaosNamespace).Update(ctx, dep, metav1.UpdateOptions{})
+		return err
+	})
 	if err != nil {
 		return ChaosScenario{}, err
 	}
