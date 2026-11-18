@@ -148,6 +148,10 @@ spec:
         env:
         - name: DRY_RUN
           value: "true"
+        # Chaos start/stop API (/api/v1/chaos). Off by default; independent of DRY_RUN. Turn it on for a
+        # test cluster with: kubectl -n aegis-system set env deploy/aegis-controller CHAOS_ENABLED=true
+        - name: CHAOS_ENABLED
+          value: "false"
         - name: MAX_REPLICAS
           value: "4"
         - name: ALLOWED_NAMESPACES

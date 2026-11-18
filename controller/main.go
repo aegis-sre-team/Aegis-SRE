@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -29,6 +31,13 @@ func main() {
 		log.Println("DRY_RUN=true: actions are validated and reported but never applied")
 	} else {
 		log.Println("DRY_RUN=false: LIVE mode, actions WILL change the cluster")
+	}
+
+	if r.ChaosEnabled {
+		log.Println("CHAOS_ENABLED=true: chaos scenarios in aegis-chaos can be started and stopped via /api/v1/chaos")
+		go r.RunChaosJanitor(context.Background(), 30*time.Second)
+	} else {
+		log.Println("CHAOS_ENABLED is not true: /api/v1/chaos is disabled")
 	}
 
 	port := os.Getenv("PORT")
@@ -62,6 +71,8 @@ func buildReconciler() (*ActionReconciler, error) {
 	}
 
 	r.DryRun = strings.ToLower(strings.TrimSpace(os.Getenv("DRY_RUN"))) != "false"
+	// Chaos start/stop is its own switch: it must work while remediation is dry-run.
+	r.ChaosEnabled = strings.EqualFold(strings.TrimSpace(os.Getenv("CHAOS_ENABLED")), "true")
 	if v := os.Getenv("MAX_REPLICAS"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {

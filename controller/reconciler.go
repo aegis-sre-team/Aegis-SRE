@@ -18,6 +18,7 @@ type ActionReconciler struct {
 	MaxReplicas       int32           // upper bound for SCALE_DEPLOYMENT (default 4)
 	AllowedNamespaces map[string]bool // optional allowlist; empty = any non-protected namespace
 	Exec              ExecFunc        // optional; used for best-effort process lists in forensics
+	ChaosEnabled      bool            // chaos start/stop API; off unless CHAOS_ENABLED=true, independent of DryRun
 	Now               func() time.Time
 }
 

@@ -26,7 +26,6 @@ os.environ.setdefault("AEGIS_SENSOR_TIMEOUT", "0.5")
 os.environ.pop("AEGIS_ALLOWED_NAMESPACES", None)
 os.environ.pop("GO_CONTROLLER_TOKEN", None)
 os.environ["DASHBOARD_MODE"] = "demo"  # never probe a real controller from unit tests
-
 TEMP_DIR = _TMP
 
 DEFAULT_METRICS = {

@@ -1,0 +1,59 @@
+# Network discovery tool (MITRE T1046 bait for Falco).
+# Detector: Falco rule "Aegis Network Discovery Tool Spawned" (runs nc). Expected outcome: quarantine.
+# It only probes the cluster's own API service address with a one second timeout.
+# Restricted: no secret mounts, no service account token, read-only root, aegis-chaos only.
+# Starts at 0 replicas; start and stop it from the console (or: kubectl scale ... --replicas=1).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-recon-sa
+  namespace: aegis-chaos
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-network-recon
+  namespace: aegis-chaos
+  labels:
+    app: chaos-network-recon
+    aegis.io/chaos: recon
+    aegis.io/mitre: T1046
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: chaos-network-recon
+  template:
+    metadata:
+      labels:
+        app: chaos-network-recon
+        aegis.io/chaos: recon
+        aegis.io/mitre: T1046
+    spec:
+      serviceAccountName: chaos-recon-sa
+      automountServiceAccountToken: false
+      containers:
+        - name: recon-bait
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "chaos-network-recon: probing the API service address with nc (T1046 bait)"
+              while true; do
+                nc -z -w 1 10.43.0.1 443 || true
+                sleep 20
+              done
+          resources:
+            requests:
+              memory: "16Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      restartPolicy: Always

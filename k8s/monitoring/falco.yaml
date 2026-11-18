@@ -48,6 +48,11 @@ data:
       - /etc/falco/falco_rules.local.yaml
       - /etc/falco/rules.d
 
+    # Falco's default is "first": only the first matching rule fires. Built-in rules load before ours, so
+    # e.g. an /etc/shadow read was reported as "Read sensitive file untrusted" and our Aegis rule (the only
+    # one the brain acts on) never fired. "all" lets both fire; the brain ignores rules not named "Aegis ...".
+    rule_matching: all
+
     json_output: true
     json_include_output_property: true
     log_stderr: true

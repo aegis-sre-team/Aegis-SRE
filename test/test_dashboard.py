@@ -19,12 +19,15 @@ class TestDashboardServer(unittest.TestCase):
     def setUp(self):
         support.reset_restart_state()
 
-    def test_dashboard_static_index_html(self):
-        """Test GET / returns 200 OK and serves index.html."""
+    def test_root_is_api_only(self):
+        """GET / is a JSON service descriptor, not a UI page (the UI is the React console on :5173)."""
         resp = self.client.get("/")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("AEGIS-SRE // Mission Control Dashboard", resp.text)
-        self.assertIn("HUMAN ESCALATION & REMEDIATION CONTROL", resp.text)
+        self.assertTrue(resp.headers["content-type"].startswith("application/json"))
+        body = resp.json()
+        self.assertEqual(body["service"], "aegis-dashboard-api")
+        self.assertEqual(body["ui"], "http://localhost:5173")
+        self.assertEqual(self.client.get("/index.html").status_code, 404)
 
     def test_chaos_trigger_oom_memory_leak(self):
         """Test POST /api/v1/chaos/trigger for OOM memory leak."""
