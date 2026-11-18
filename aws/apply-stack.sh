@@ -9,6 +9,9 @@
 #   WITH_GRAFANA=1 aws/apply-stack.sh also deploy Grafana (off by default: nothing in
 #                                     the pipeline reads it; saves RAM)
 #   AEGIS_HOST=<ip> ...               skip the AWS lookup (no AWS credentials needed)
+#   KUBE_API_HOST=127.0.0.1 ...       reach the API through an SSH tunnel instead of port 6443:
+#                                     ssh -N -L 6443:127.0.0.1:6443 ubuntu@<ip>
+#   PLATFORM=linux/amd64 BUILD=1 ...  build images for an x86 node (default linux/arm64)
 #
 # Chaos pods are NOT applied; PHASES.md has you trigger them one at a time:
 #   kubectl apply -f k8s/chaos/chaos-cpu-spike.yaml
@@ -36,10 +39,10 @@ log "Fetching kubeconfig -> $KUBECONFIG_OUT"
 mkdir -p "$(dirname "$KUBECONFIG_OUT")"
 ( umask 077
   ssh_node 'sudo cat /etc/rancher/k3s/k3s.yaml' \
-    | sed -E "s#https://127\.0\.0\.1:6443#https://${host}:6443#; s#^([[:space:]]*)(name|cluster|user|current-context): default\$#\1\2: aegis-aws#" \
+    | sed -E "s#https://127\.0\.0\.1:6443#https://${KUBE_API_HOST:-$host}:6443#; s#^([[:space:]]*(- )?)(name|cluster|user|current-context): default\$#\1\3: aegis-aws#" \
     > "$KUBECONFIG_OUT" )
 export KUBECONFIG="$KUBECONFIG_OUT"
-kubectl get --raw /readyz >/dev/null || die "Cannot reach the API at $host:6443. Is your IP in ALLOWED_CIDRS?"
+kubectl get nodes >/dev/null || die "Cannot reach the API at $host:6443. Is your IP in ALLOWED_CIDRS?"
 
 # --- 2. Cilium (Path A in k8s/cilium/INSTALL.md) ---------------------------
 node_ip="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
@@ -70,8 +73,9 @@ if [ "${SKIP_CONTROLLER:-0}" = "1" ]; then
 else
   if ! kubectl -n aegis-system get secret aegis-controller-token >/dev/null 2>&1; then
     log "Creating aegis-controller-token (random, stored only in the cluster)"
-    printf '%s' "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
-      | kubectl -n aegis-system create secret generic aegis-controller-token --from-file=token=/dev/stdin >/dev/null
+    # --from-literal rather than /dev/stdin so it also works with a Windows kubectl.exe under Git Bash.
+    kubectl -n aegis-system create secret generic aegis-controller-token \
+      --from-literal=token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')" >/dev/null
   fi
   "$HERE/push-image.sh" controller
   kubectl apply -f k8s/controller/controller.yaml

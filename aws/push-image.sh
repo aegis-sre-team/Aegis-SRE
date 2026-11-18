@@ -26,8 +26,9 @@ esac
 
 if [ "${BUILD:-0}" = "1" ]; then
   need docker
-  log "Building $IMAGE for linux/arm64"
-  docker buildx build --platform linux/arm64 -f "$DOCKERFILE" \
+  PLATFORM="${PLATFORM:-linux/arm64}"   # set PLATFORM=linux/amd64 for an x86 node
+  log "Building $IMAGE for $PLATFORM"
+  docker buildx build --platform "$PLATFORM" -f "$DOCKERFILE" \
       -t "$IMAGE" --output "type=docker,dest=$TAR" "$BUILD_CTX"
 fi
 [ -f "$TAR" ] || die "$TAR not found. Run with BUILD=1 (needs Docker buildx)."

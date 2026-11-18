@@ -12,7 +12,19 @@ DB_DIR = os.getenv("AEGIS_DB_DIR", "logs")
 os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, "aegis_sre.db")
 # Empty string from optional K8s secret must fall back to SQLite on the data volume.
-DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip() or f"sqlite:///{DB_PATH}"
+def normalize_database_url(url: str) -> str:
+    """Pin a bare postgres URL to psycopg2 (the driver in requirements.txt).
+
+    Newer SQLAlchemy defaults `postgresql://` to psycopg v3, which is not installed, so the brain
+    crash-looped on import. An explicit `postgresql+<driver>://` is left alone.
+    """
+    for bare in ("postgresql://", "postgres://"):
+        if url.startswith(bare):
+            return "postgresql+psycopg2://" + url[len(bare):]
+    return url
+
+
+DATABASE_URL = normalize_database_url((os.getenv("DATABASE_URL") or "").strip()) or f"sqlite:///{DB_PATH}"
 
 _is_sqlite = DATABASE_URL.startswith("sqlite")
 _engine_kwargs = {
@@ -34,7 +46,7 @@ def configure_database(database_url: str):
         engine.dispose()
     except Exception:
         pass
-    DATABASE_URL = database_url
+    DATABASE_URL = normalize_database_url(database_url)
     _is_sqlite = DATABASE_URL.startswith("sqlite")
     kwargs = {"pool_pre_ping": True}
     if _is_sqlite:

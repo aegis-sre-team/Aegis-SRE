@@ -89,6 +89,18 @@ class TestNoDataIsNotNormal(unittest.TestCase):
         self.assertIn("NEAR OOM", text)
         self.assertIn("(20.0%, Status: HIGH)", text)
 
+    def test_cpu_above_alert_threshold_reads_elevated(self):
+        # AegisHighPodCPU fires at > 70%. A live incident at 77.7% read "NORMAL" and the model called the
+        # firing alert a false positive, so the serializer must agree with the alert rule.
+        text = MetricSerializer.serialize_prometheus_metrics("p", {
+            "sensor_ok": True, "cpu_usage_pct": 77.7, "memory_mb": 10.0, "memory_pct": 10.0,
+            "total_requests": None, "error_500_count": None, "avg_latency_ms": None})
+        self.assertIn("CPU Usage: 77.7% (Status: ELEVATED)", text)
+        below = MetricSerializer.serialize_prometheus_metrics("p", {
+            "sensor_ok": True, "cpu_usage_pct": 69.0, "memory_mb": 10.0, "memory_pct": 10.0,
+            "total_requests": None, "error_500_count": None, "avg_latency_ms": None})
+        self.assertIn("CPU Usage: 69.0% (Status: NORMAL)", below)
+
 
 class TestEnginePassesNamespace(unittest.TestCase):
     def test_engine_passes_namespace_to_every_collector_call(self):

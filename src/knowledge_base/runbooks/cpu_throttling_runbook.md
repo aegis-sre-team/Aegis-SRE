@@ -4,7 +4,7 @@
 CPU throttling occurs when a container attempts to consume more CPU time than its configured cgroup CPU quota allows, leading to latency spikes and request timeouts.
 
 ## Symptoms
-- Container CPU utilization exceeds 90% threshold (`container_cpu_usage_seconds_total`).
+- Container CPU utilization exceeds 70% of its CPU quota for 1 minute (`container_cpu_usage_seconds_total`). This is exactly when the `AegisHighPodCPU` alert fires, so a firing alert with CPU at or above 70% is a real saturation incident, not a false positive.
 - High cgroup throttling metrics (`container_cpu_cfs_throttled_periods_total`).
 - Request latency spikes in application metrics.
 - NO Falco security alerts or unexpected binary execution.

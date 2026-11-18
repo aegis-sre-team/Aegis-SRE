@@ -10,7 +10,9 @@ class MetricSerializer:
     """
     
     # Configurable status thresholds
-    CPU_THRESHOLD_ELEVATED = 80.0
+    # Must match the AegisHighPodCPU rule in k8s/monitoring/prometheus.yaml (> 70% of quota). A higher
+    # value here made a firing alert read "NORMAL" and the model called it a false positive.
+    CPU_THRESHOLD_ELEVATED = 70.0
     RAM_THRESHOLD_OOM = 85.0
     ERROR_RATE_HIGH = 10.0
 
