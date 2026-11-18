@@ -26,9 +26,6 @@ os.environ.setdefault("AEGIS_SENSOR_TIMEOUT", "0.5")
 os.environ.pop("AEGIS_ALLOWED_NAMESPACES", None)
 os.environ.pop("GO_CONTROLLER_TOKEN", None)
 os.environ["DASHBOARD_MODE"] = "demo"  # never probe a real controller from unit tests
-# Serve the legacy page in tests whether or not frontend/dist was built locally (test_spa_mount covers React).
-os.environ["AEGIS_FRONTEND_DIST"] = os.path.join(_TMP, "no-frontend-build")
-
 TEMP_DIR = _TMP
 
 DEFAULT_METRICS = {

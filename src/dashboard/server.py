@@ -12,8 +12,7 @@ load_dotenv()
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.brain.diagnostic_engine import DiagnosticEngine
@@ -636,10 +635,16 @@ Through autonomous policy enforcement, the platform selected and executed `{inc.
         logger.error(f"Error generating post-mortem: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Serve the React console (frontend/dist) when it has been built, else the legacy static page.
-from src.dashboard.spa import mount_dashboard
-
-mount_dashboard(app, os.path.join("src", "dashboard", "static"))
+@app.get("/")
+async def service_info():
+    """API only: the operator UI is the React console (frontend/, Vite dev server on :5173)."""
+    return {
+        "service": "aegis-dashboard-api",
+        "data_source": current_data_source(),
+        "ui": "http://localhost:5173",
+        "docs": "/docs",
+        "websocket": "/ws/telemetry",
+    }
 
 if __name__ == "__main__":
     import uvicorn
