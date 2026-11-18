@@ -123,8 +123,9 @@ export function Simulate() {
         <header className="panel-head">
           <h2>Result</h2>
           {last && (
-            <span className="muted small">
-              {last.pod_name} · diagnosed by {String(last.verdict._ai_provider ?? 'unknown provider')}
+            <span className="muted small meta">
+              <span>{last.pod_name}</span>
+              <span>diagnosed by {String(last.verdict._ai_provider ?? 'unknown provider')}</span>
             </span>
           )}
         </header>

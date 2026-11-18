@@ -100,7 +100,7 @@ export function ForensicsView({ pod }: { pod: string }) {
           <dt>Technique</dt>
           <dd>{f.mitre_technique ?? 'Not mapped'}</dd>
         </div>
-        <div>
+        <div className="wide">
           <dt>Trigger</dt>
           <dd>{f.trigger_reason ?? 'Not recorded'}</dd>
         </div>

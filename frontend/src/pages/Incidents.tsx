@@ -57,11 +57,13 @@ export function Incidents() {
                         <span className="mono">{i.target_pod}</span>
                         <OutcomeBadge outcome={outcomeOf(stages, i)} />
                       </span>
-                      <span className="list-sub">
-                        {problemLabel(i.problem_type)} · {actionLabel(i.final_action)}
+                      <span className="list-sub meta">
+                        <span>{problemLabel(i.problem_type)}</span>
+                        <span className="muted">{actionLabel(i.final_action)}</span>
                       </span>
-                      <span className="list-meta small muted">
-                        {i.incident_id} · {timeAgo(i.created_at, now)}
+                      <span className="list-meta small muted meta">
+                        <span>{i.incident_id}</span>
+                        <span>{timeAgo(i.created_at, now)}</span>
                       </span>
                     </button>
                   </li>
@@ -107,8 +109,9 @@ function IncidentDetail({ incident, audits, onBack }: { incident: Incident; audi
       <header className="detail-head">
         <div>
           <h2 className="mono">{incident.target_pod}</h2>
-          <p className="muted small">
-            {incident.incident_id} · detected {fullTime(incident.created_at)}
+          <p className="muted small meta">
+            <span>{incident.incident_id}</span>
+            <span>detected {fullTime(incident.created_at)}</span>
           </p>
         </div>
         <div className="row gap">

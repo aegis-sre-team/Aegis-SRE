@@ -1,44 +1,14 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { Activity, FlaskConical, Monitor, Moon, ScrollText, ShieldAlert, Siren, Sun, UserCheck, WifiOff } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Activity, FlaskConical, ScrollText, ShieldAlert, Siren, UserCheck, WifiOff } from 'lucide-react'
 import { useAegis } from '../state/AegisProvider'
 import { Badge } from './bits'
 
-type Theme = 'system' | 'light' | 'dark'
-
-function useTheme(): [Theme, (t: Theme) => void] {
-  const [theme, setTheme] = useState<Theme>(() => {
-    try {
-      const t = localStorage.getItem('aegis-theme')
-      return t === 'light' || t === 'dark' ? t : 'system'
-    } catch {
-      return 'system'
-    }
-  })
-  useEffect(() => {
-    const root = document.documentElement
-    if (theme === 'system') delete root.dataset.theme
-    else root.dataset.theme = theme
-    try {
-      if (theme === 'system') localStorage.removeItem('aegis-theme')
-      else localStorage.setItem('aegis-theme', theme)
-    } catch {
-      /* ignore */
-    }
-  }, [theme])
-  return [theme, setTheme]
-}
-
 export function Shell() {
   const { state, stale } = useAegis()
-  const [theme, setTheme] = useTheme()
   const snap = state.snapshot
   const demo = snap?.data_source !== 'live'
   const needsHuman = snap?.escalations.length ?? 0
   const caged = snap?.quarantines.length ?? 0
-
-  const next: Record<Theme, Theme> = { system: 'light', light: 'dark', dark: 'system' }
-  const ThemeIcon = theme === 'system' ? Monitor : theme === 'light' ? Sun : Moon
 
   return (
     <div className="shell">
@@ -47,9 +17,9 @@ export function Shell() {
       </a>
       <aside className="rail">
         <div className="brand">
-          <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
-            <path d="M16 3 5 7v8c0 7 4.7 12.3 11 14 6.3-1.7 11-7 11-14V7z" fill="var(--brand)" />
-            <path d="m11 16 4 4 7-8" fill="none" stroke="var(--brand-ink)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M16 3 5 7v8c0 7 4.7 12.3 11 14 6.3-1.7 11-7 11-14V7z" fill="var(--cobalt)" />
+            <path d="m11 16 4 4 7-8" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
           <span>Aegis</span>
         </div>
@@ -83,12 +53,6 @@ export function Shell() {
             </NavLink>
           )}
         </nav>
-        <div className="rail-foot">
-          <button className="btn btn-quiet" onClick={() => setTheme(next[theme])} aria-label={`Theme: ${theme}. Switch theme`}>
-            <ThemeIcon size={16} />
-            <span>{theme === 'system' ? 'Match system' : theme === 'light' ? 'Light' : 'Dark'}</span>
-          </button>
-        </div>
       </aside>
 
       <div className="stage-area">

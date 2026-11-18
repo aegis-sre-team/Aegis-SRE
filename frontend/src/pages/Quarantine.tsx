@@ -65,7 +65,7 @@ export function Quarantine() {
             <ul className="list">
               {list.map((q) => (
                 <li key={q.pod_name}>
-                  <button className={`list-item${selected?.pod_name === q.pod_name ? ' is-active' : ''}`} onClick={() => nav(`/quarantine/${encodeURIComponent(q.pod_name)}`)}>
+                  <button className={`list-item is-caged${selected?.pod_name === q.pod_name ? ' is-active' : ''}`} onClick={() => nav(`/quarantine/${encodeURIComponent(q.pod_name)}`)}>
                     <span className="list-top">
                       <span className="mono">{q.pod_name}</span>
                       <Badge tone="defend">Isolated</Badge>

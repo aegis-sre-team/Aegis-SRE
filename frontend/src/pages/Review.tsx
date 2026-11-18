@@ -50,8 +50,9 @@ export function Review() {
                       <Badge tone="warn">{confidenceLabel(e.confidence)}</Badge>
                     </span>
                     <span className="list-sub">{e.reason}</span>
-                    <span className="list-meta small muted">
-                      {problemLabel(e.problem_type)} · {timeAgo(e.timestamp, now)}
+                    <span className="list-meta small muted meta">
+                      <span>{problemLabel(e.problem_type)}</span>
+                      <span>{timeAgo(e.timestamp, now)}</span>
                     </span>
                   </button>
                 </li>
@@ -125,8 +126,9 @@ function Decision({ item, onBack, onDone }: { item: Escalation; onBack: () => vo
       <header className="detail-head">
         <div>
           <h2 className="mono">{item.target_pod}</h2>
-          <p className="muted small">
-            {item.incident_id} · {item.timestamp}
+          <p className="muted small meta">
+            <span>{item.incident_id}</span>
+            <span>{item.timestamp}</span>
           </p>
         </div>
         <Badge tone="warn">{confidenceLabel(item.confidence)} confidence</Badge>

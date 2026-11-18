@@ -1,13 +1,14 @@
 import { Link } from 'react-router-dom'
 import { useMemo } from 'react'
-import { ArrowRight, Boxes } from 'lucide-react'
+import { Boxes } from 'lucide-react'
 import { useAegis } from '../state/AegisProvider'
 import { podKey } from '../state/reducer'
 import { api } from '../api/client'
 import { useResource } from '../state/hooks'
-import { Banner, Empty, Meter, PageHead, Sparkline, StatusBadge } from '../components/bits'
+import { Banner, Empty, Meter, Sparkline, StatusBadge } from '../components/bits'
 import { actionLabel, clockTime, timeAgo } from '../lib/format'
 import { resultOf } from '../lib/pipeline'
+import { statusHeadline, summarizePods } from '../lib/headline'
 import type { Pod, TerminalLog } from '../api/types'
 
 const LEVEL_TONE: Record<string, string> = { SUCCESS: 'ok', ERROR: 'bad', ALERT: 'bad', WARN: 'warn', INFO: 'neutral' }
@@ -19,31 +20,37 @@ export function Overview() {
   const audit = useResource(() => api.audit(), 'overview-audit')
 
   const pods = snap?.pods ?? []
-  const counts = useMemo(() => {
-    const c = { healthy: 0, degraded: 0, quarantined: 0 }
-    for (const p of pods) {
-      if (p.status === 'HEALTHY') c.healthy++
-      else if (p.status === 'QUARANTINED') c.quarantined++
-      else c.degraded++
-    }
-    return c
-  }, [pods])
+  const counts = useMemo(() => summarizePods(pods), [pods])
 
   const sensorsDown = snap?.sensors ? Object.entries(snap.sensors).filter(([, s]) => !s.ok) : []
   const lastAction = audit.data?.audit_logs[0]
   const waiting = snap?.escalations.length ?? 0
   const demo = snap?.data_source !== 'live'
 
+  const headline = statusHeadline({
+    hasReading: snap !== null,
+    pods,
+    sensorsDown: sensorsDown.map(([n]) => n),
+    waiting,
+    quarantines: snap?.quarantines.length ?? 0,
+  })
+
   return (
     <>
-      <PageHead
-        title="Overview"
-        sub={
-          demo
+      <section className={`hero tone-${headline.tone}`} aria-labelledby="hero-h">
+        <h1 id="hero-h">{headline.title}</h1>
+        <p className="hero-detail">{headline.detail}</p>
+        {waiting > 0 && (
+          <Link className="btn btn-primary" to="/review">
+            Review {waiting === 1 ? 'the incident' : 'the incidents'}
+          </Link>
+        )}
+        <p className="hero-note muted small">
+          {demo
             ? 'Simulated pods. Nothing here reflects a real cluster, and the Simulate page can inject failures.'
-            : 'Pods in the managed namespaces, read from the controller and Prometheus.'
-        }
-      />
+            : 'Pods in the managed namespaces, read from the controller and Prometheus.'}
+        </p>
+      </section>
 
       {sensorsDown.length > 0 && (
         <Banner tone="bad" title={`${sensorsDown.map(([n]) => n).join(' and ')} not reachable`}>
@@ -55,28 +62,15 @@ export function Overview() {
           {snap.error}
         </Banner>
       )}
-      {waiting > 0 && (
-        <Banner
-          tone="warn"
-          title={`${waiting} ${waiting === 1 ? 'incident needs' : 'incidents need'} a decision`}
-          action={
-            <Link className="btn btn-primary" to="/review">
-              Review <ArrowRight size={16} />
-            </Link>
-          }
-        >
-          Aegis stopped before acting. Nothing runs on these until a person decides.
-        </Banner>
-      )}
 
       <section className="kpis" aria-label="Summary">
         <div className="kpi">
           <span className="kpi-label">Healthy pods</span>
           <span className="kpi-value">
             {counts.healthy}
-            <small> of {pods.length}</small>
+            <small> of {counts.total}</small>
           </span>
-          <span className="kpi-note">{counts.degraded > 0 ? `${counts.degraded} degraded or failing` : 'None degraded'}</span>
+          <span className="kpi-note">{counts.attention > 0 ? `${counts.attention} degraded or failing` : 'None degraded'}</span>
         </div>
         <div className="kpi">
           <span className="kpi-label">Quarantined</span>
@@ -98,7 +92,7 @@ export function Overview() {
       </section>
 
       <div className="split">
-        <section className="panel" aria-labelledby="pods-h">
+        <section className="section" aria-labelledby="pods-h">
           <header className="panel-head">
             <h2 id="pods-h">Pods</h2>
             <span className="muted">{pods.length} total</span>
@@ -118,7 +112,7 @@ export function Overview() {
           )}
         </section>
 
-        <section className="panel" aria-labelledby="feed-h">
+        <section className="section" aria-labelledby="feed-h">
           <header className="panel-head">
             <h2 id="feed-h">Activity</h2>
             <span className="muted">Latest first</span>
@@ -131,12 +125,13 @@ export function Overview() {
 }
 
 function PodRow({ pod, cpu, mem }: { pod: Pod; cpu: number[]; mem: number[] }) {
+  const where = [pod.namespace, pod.app, pod.node].filter((v): v is string => Boolean(v))
   return (
-    <li className="pod-row">
+    <li className={`pod-row pod-${String(pod.status).toLowerCase()}`}>
       <div className="pod-id">
         <span className="mono pod-name">{pod.pod_name}</span>
-        <span className="muted small">
-          {[pod.namespace, pod.app, pod.node].filter(Boolean).join(' · ') || 'Simulated pod'}
+        <span className="pod-meta muted small">
+          {where.length > 0 ? where.map((w, i) => <span key={`${i}-${w}`}>{w}</span>) : <span>Simulated pod</span>}
         </span>
       </div>
       <StatusBadge status={pod.status} />

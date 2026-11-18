@@ -1,5 +1,5 @@
-import '@fontsource-variable/hanken-grotesk'
-import '@fontsource-variable/jetbrains-mono'
+import '@fontsource-variable/atkinson-hyperlegible-next'
+import '@fontsource-variable/atkinson-hyperlegible-mono'
 import './styles/app.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
