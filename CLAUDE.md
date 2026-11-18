@@ -68,7 +68,7 @@ Pipeline: **collector → metric serializer → RAG → LLM → guardrails → e
 
 - Runtime output goes to `logs/` (JSONL audit logs, SQLite DB, benchmark reports), which is mostly gitignored. `logs/guardrail_audit.jsonl` is tracked and gets modified by test runs. Don't commit that churn.
 - The repo directory holds secrets that are gitignored: `.env`, the `ssh-key-*.key` files, `oracle-k3s.yaml` (kubeconfig for the dead cluster), and the image tarballs (`aegis-*.tar`). Never stage them. `k8s/cilium/values-k3s.yaml` is deliberately un-ignored (an exception to the `*k3s.yaml` rule) because `aws/apply-stack.sh` needs it.
-- Env switches worth knowing: `AEGIS_DRY_RUN`, `AEGIS_AUTO_REMEDIATE`, `AEGIS_ALLOWED_NAMESPACES`, `AEGIS_ALLOW_KUBECTL_FALLBACK`, `AEGIS_ALERT_DEBOUNCE_S`, `AEGIS_INGEST_TOKEN`, `AEGIS_DASHBOARD_TOKEN`, `VERIFY_TIMEOUT_S`, `DASHBOARD_MODE`; controller side `DRY_RUN`, `CHAOS_ENABLED`, `MAX_REPLICAS`, `ALLOWED_NAMESPACES`, `CONTROLLER_TOKEN`.
+- Env switches worth knowing: `AEGIS_DRY_RUN`, `AEGIS_AUTO_REMEDIATE`, `AEGIS_ALLOWED_NAMESPACES`, `AEGIS_ALLOW_KUBECTL_FALLBACK`, `AEGIS_ALERT_DEBOUNCE_S`, `AEGIS_INGEST_TOKEN`, `AEGIS_DASHBOARD_TOKEN`, `VERIFY_TIMEOUT_S`, `DASHBOARD_MODE`, `DASHBOARD_SENSOR_TIMEOUT_S` (per controller/Prometheus call, default 3; raise to ~8 when the dashboard reaches the cluster through an SSH tunnel and port-forwards, where each call costs ~1.5 s, or Prometheus flickers "down"), `DASHBOARD_SNAPSHOT_TTL_S` (default 4); controller side `DRY_RUN`, `CHAOS_ENABLED`, `MAX_REPLICAS`, `ALLOWED_NAMESPACES`, `CONTROLLER_TOKEN`.
 - The dev machine runs Windows. The README shows both PowerShell and bash forms of each command.
 
 ## Git workflow

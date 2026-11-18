@@ -64,6 +64,100 @@ def fake_get(pods_by_ns, cpu=None, mem=None, prom_down=False, controller_down=Fa
     return _get
 
 
+class TestLiveSnapshotSpeed(unittest.TestCase):
+    """Through an SSH tunnel every request costs ~1.5 s, so four sequential calls took ~10 s and timed out."""
+
+    def _state(self, **kw):
+        return LiveClusterState(controller_url=CTRL, prometheus_url=PROM,
+                                namespaces=["online-boutique", "aegis-chaos"], token="tok", **kw)
+
+    def test_the_upstream_calls_run_in_parallel(self):
+        import threading
+        import time
+
+        inner = fake_get({"online-boutique": [_pod()], "aegis-chaos": []}, cpu={POD: 1.0}, mem={POD: 2.0})
+        lock, state = threading.Lock(), {"now": 0, "peak": 0}
+
+        def slow(url, params=None, headers=None, timeout=None):
+            with lock:
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+            time.sleep(0.15)
+            try:
+                return inner(url, params=params, headers=headers, timeout=timeout)
+            finally:
+                with lock:
+                    state["now"] -= 1
+
+        with mock.patch("requests.get", side_effect=slow):
+            snap = self._state().snapshot()
+        self.assertGreaterEqual(state["peak"], 3, "2 namespace calls and 2 Prometheus queries must overlap")
+        self.assertEqual(1, len(snap["pods"]))
+        self.assertEqual((1.0, 2.0), (snap["pods"][0]["cpu_pct"], snap["pods"][0]["mem_pct"]))
+
+    def test_a_cached_snapshot_makes_no_new_requests(self):
+        get = mock.Mock(side_effect=fake_get({"online-boutique": [_pod()], "aegis-chaos": []}, cpu={POD: 1.0}, mem={POD: 2.0}))
+        state = self._state(snapshot_ttl=60.0)
+        with mock.patch("requests.get", get):
+            first = state.snapshot()
+            calls = get.call_count
+            second = state.snapshot()
+        self.assertGreater(calls, 0)
+        self.assertEqual(calls, get.call_count, "the second call must be served from the cache")
+        self.assertEqual(first, second)
+
+    def test_the_cache_hands_out_copies_so_a_caller_cannot_poison_it(self):
+        state = self._state(snapshot_ttl=60.0)
+        with mock.patch("requests.get", side_effect=fake_get({"online-boutique": [_pod()], "aegis-chaos": []})):
+            state.snapshot()["pods"].clear()
+            self.assertEqual(1, len(state.snapshot()["pods"]))
+
+    def test_without_a_ttl_every_call_refetches(self):
+        get = mock.Mock(side_effect=fake_get({"online-boutique": [_pod()], "aegis-chaos": []}))
+        state = self._state()
+        with mock.patch("requests.get", get):
+            state.snapshot()
+            after_first = get.call_count
+            state.snapshot()
+        self.assertGreater(get.call_count, after_first)
+
+    def test_the_configured_timeout_reaches_every_call(self):
+        seen = []
+        inner = fake_get({"online-boutique": [_pod()], "aegis-chaos": []})
+
+        def spy(url, params=None, headers=None, timeout=None):
+            seen.append(timeout)
+            return inner(url, params=params, headers=headers, timeout=timeout)
+
+        with mock.patch("requests.get", side_effect=spy):
+            self._state(timeout=9.0).snapshot()
+        self.assertTrue(seen and all(t == 9.0 for t in seen), seen)
+
+    def test_one_failing_prometheus_query_still_reports_the_other_metric(self):
+        inner = fake_get({"online-boutique": [_pod()], "aegis-chaos": []}, cpu={POD: 41.0}, mem={POD: 62.0})
+
+        def flaky(url, params=None, headers=None, timeout=None):
+            if "/api/v1/query" in url and "working_set" in params["query"]:
+                raise requests.ConnectionError("memory query timed out")
+            return inner(url, params=params, headers=headers, timeout=timeout)
+
+        with mock.patch("requests.get", side_effect=flaky):
+            snap = self._state().snapshot()
+        self.assertFalse(snap["sensors"]["prometheus"]["ok"])
+        self.assertIn("timed out", snap["sensors"]["prometheus"]["detail"])
+        self.assertEqual((41.0, None), (snap["pods"][0]["cpu_pct"], snap["pods"][0]["mem_pct"]))
+
+
+class TestEnvFloat(unittest.TestCase):
+    def test_reads_a_positive_number_and_falls_back_on_anything_else(self):
+        name = "AEGIS_TEST_ENV_FLOAT"
+        for raw, want in (("8", 8.0), ("2.5", 2.5), ("", 3.0), ("abc", 3.0), ("-1", 3.0), ("0", 3.0), ("nan", 3.0), ("inf", 3.0)):
+            with mock.patch.dict(os.environ, {name: raw}):
+                self.assertEqual(want, server._env_float(name, 3.0), repr(raw))
+        os.environ.pop(name, None)
+        self.assertEqual(3.0, server._env_float(name, 3.0), "unset")
+
+
 class TestLiveSnapshot(unittest.TestCase):
     def _state(self):
         return LiveClusterState(controller_url=CTRL, prometheus_url=PROM,

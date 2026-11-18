@@ -104,11 +104,25 @@ escalation_notifier = EscalationNotifier()
 
 # Live cluster state: pods from the Go controller, CPU/memory from Prometheus. Demo mode (simulated
 # pods) is used only when no controller answers (DASHBOARD_MODE=auto), and every payload says which.
+def _env_float(name: str, default: float) -> float:
+    """A positive, finite number from the environment, else the default (a typo must not stop the dashboard)."""
+    try:
+        value = float(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if 0 < value < float("inf") else default
+
+
+# DASHBOARD_SENSOR_TIMEOUT_S: seconds each controller/Prometheus call may take. 3 suits in-cluster; through an
+# SSH tunnel a call costs ~1.5 s, so raise it (8 works) or Prometheus flickers "down".
+# DASHBOARD_SNAPSHOT_TTL_S: how long one live snapshot is shared between the tick loop and REST polls.
 live_state = LiveClusterState(
     controller_url=os.getenv("GO_CONTROLLER_URL", ""),
     prometheus_url=os.getenv("PROMETHEUS_URL", "http://localhost:9090"),
     namespaces=[n.strip() for n in os.getenv("DASHBOARD_NAMESPACES", "online-boutique,aegis-chaos").split(",") if n.strip()],
     token=os.getenv("GO_CONTROLLER_TOKEN") or None,
+    timeout=_env_float("DASHBOARD_SENSOR_TIMEOUT_S", 3.0),
+    snapshot_ttl=_env_float("DASHBOARD_SNAPSHOT_TTL_S", 4.0),
 )
 
 # Start/stop of the chaos scenarios goes through the Go controller (the only component that changes the cluster).
