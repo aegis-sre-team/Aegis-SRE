@@ -636,10 +636,10 @@ Through autonomous policy enforcement, the platform selected and executed `{inc.
         logger.error(f"Error generating post-mortem: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Mount Static directory
-static_dir = os.path.join("src", "dashboard", "static")
-os.makedirs(static_dir, exist_ok=True)
-app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+# Serve the React console (frontend/dist) when it has been built, else the legacy static page.
+from src.dashboard.spa import mount_dashboard
+
+mount_dashboard(app, os.path.join("src", "dashboard", "static"))
 
 if __name__ == "__main__":
     import uvicorn
