@@ -134,6 +134,8 @@ spec:
       serviceAccountName: aegis-controller
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532    # distroless "nonroot"; kubelet cannot verify a non-numeric USER
+        runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
