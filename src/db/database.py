@@ -57,9 +57,18 @@ def configure_database(database_url: str):
     return SessionLocal
 
 
+_initialized_engine = None
+
+
 def init_db():
+    """Create the tables once per engine. ``create_all`` checks every table, which against a remote Postgres
+    costs seconds, and callers (the dashboard's refresh, the brain's writes) invoke this on every call."""
+    global _initialized_engine
+    if _initialized_engine is engine:
+        return
     from src.db.models import Base as ModelsBase
     ModelsBase.metadata.create_all(bind=engine)
+    _initialized_engine = engine  # only after success, so a failed attempt is retried
 
 
 def db_health() -> dict:
