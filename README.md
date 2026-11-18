@@ -173,35 +173,26 @@ Aegis-SRE/
 │   ├── exec.go             # In-pod command executor
 │   └── server.go           # Internal REST server listening on :8080
 ├── src/
-│   ├── brain/              # Autonomous AI Diagnostic Engine
-│   │   ├── api.py          # FastAPI Brain API (:8001) for alert webhooks
-│   │   ├── diagnostic.py   # 3-tier LLM engine (Ollama → Groq → Rules)
-│   │   ├── collector.py    # Metric serializer with SensorDarkError fail-closed
-│   │   ├── remediation.py  # End-to-end process_alert() loop + AlertDebouncer
-│   │   ├── rag.py          # TF-IDF vector retrieval engine
-│   │   └── models.py       # Pydantic schemas & RFC-1123 name validators
-│   ├── guardrails/         # Deterministic Safety Engine
-│   │   ├── engine.py       # Zero-bypass safety validator & rate limiter
-│   │   └── actions.py      # Action schemas (RESTART, SCALE, QUARANTINE)
-│   ├── dashboard/          # Mission Control WebSockets Dashboard (:8000)
-│   │   ├── server.py       # FastAPI application entrypoint
-│   │   ├── routes.py       # REST API endpoints & incident pagination
-│   │   └── state.py        # LiveClusterState real-time cache
-│   ├── db/                 # Neon PostgreSQL Persistence
-│   │   ├── models.py       # 5 SQLAlchemy ORM models
-│   │   └── session.py      # Async session manager with SQLite fallback
-│   ├── knowledge_base/     # 12 SRE Runbooks & MITRE ATT&CK reference playbooks
-│   └── target_app/         # Flask e-commerce target app for local testing
-├── config/                 # Sensor configs (Prometheus, Falco rules, Loki, Grafana)
-├── deploy/                 # Docker Compose full local testing stack
-├── docs/                   # Academic Capstone Documentation & Synopsis
-│   └── PROJECT_SYNOPSIS.md # Complete 1600+ line B.Tech Major Project Report
-├── k8s/                    # Kubernetes manifests
-│   ├── monitoring/         # Prometheus, Loki, Falco daemonsets
-│   ├── online-boutique/    # 11-microservice polyglot target application
-│   └── chaos/              # Chaos engineering fault injection manifests
-├── test/                   # 18 automated test suites (232 test cases)
-└── requirements.txt        # Python production dependencies
+│   ├── brain/              # Diagnostic engine, LLM client, RAG, collectors
+│   ├── guardrails/         # Action schema + safety validator
+│   ├── controller/         # Python executor + Cilium policy helpers
+│   ├── dashboard/          # FastAPI mission-control API (UI lives in frontend/)
+│   ├── db/                 # SQLite persistence models
+│   ├── knowledge_base/     # Runbooks + MITRE security notes
+│   └── target_app/         # Demo e-commerce / chaos target app
+├── controller/             # Go Kubernetes action controller (client-go)
+├── config/                 # Prometheus, Loki, Promtail, Falco, Grafana
+├── deploy/
+│   ├── docker-compose.yml  # Local full stack
+│   └── k8s/                # Namespace, target app, chaos suite manifests
+├── k8s/
+│   ├── monitoring/         # Cluster monitoring manifests
+│   └── online-boutique/    # Online Boutique workload manifests
+├── test/                   # Unit, integration, chaos benchmark suites
+├── scripts/                # Public tunnel helpers (Cloudflare)
+├── PHASE1_CLOUD_SETUP.md   # Oracle Cloud K3s provisioning guide
+├── PHASES.md               # Phased build plan
+└── requirements.txt
 ```
 
 ---
