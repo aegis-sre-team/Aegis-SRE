@@ -51,5 +51,19 @@ class TestChaosManifests(unittest.TestCase):
                 self.assertIn("aegis.io/chaos", labels)
 
 
+FALCO_YAML = os.path.join(os.path.dirname(CHAOS_DIR), "monitoring", "falco.yaml")
+
+
+class TestFalcoConfig(unittest.TestCase):
+    def test_every_matching_rule_may_fire(self):
+        """Falco defaults to rule_matching=first: an event caught by a built-in rule (e.g. 'Read sensitive file
+        untrusted' for /etc/shadow) would never reach the Aegis rule that the brain listens for."""
+        with open(FALCO_YAML, encoding="utf-8") as f:
+            docs = [d for d in yaml.safe_load_all(f) if d]
+        cfg = next(d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "falco-config")
+        falco = yaml.safe_load(cfg["data"]["falco.yaml"])
+        self.assertEqual("all", falco.get("rule_matching"))
+
+
 if __name__ == "__main__":
     unittest.main()
