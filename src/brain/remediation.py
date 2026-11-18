@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
+from src.db.escalations import mark_escalated
 from src.guardrails.action_schema import GuardrailDecision, STATE_ESCALATE_HUMAN, is_valid_k8s_name  # noqa: F401 (re-exported)
 
 logger = logging.getLogger("aegis-remediation")
@@ -117,6 +118,8 @@ def process_alert(engine, executor, notifier, pod_name: str, alert_type: str,
             original_action=base.original_action,
         )
         escalation = notifier.dispatch_escalation(escalate_decision, clean_verdict)
+        # The shared database is how a human sees this on the dashboard's Review page.
+        mark_escalated(clean_verdict, escalation_reason)
         logger.warning("ESCALATED %s/%s: %s", namespace, pod_name, escalation_reason)
 
     dry_run = bool(getattr(executor, "dry_run_mode", False))
