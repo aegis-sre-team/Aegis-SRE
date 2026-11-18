@@ -75,18 +75,19 @@ data:
       url: http://aegis-brain.aegis-system.svc:8001/api/v1/alerts/falco
       user_agent: aegis-falco
 
-    plugins: []
-    load_plugins: []
+    # Falco >= 0.40 moved container metadata into the `container` plugin (bundled in the image),
+    # and the bundled rules require it. Default engines already probe the K3s containerd socket
+    # (/run/k3s/containerd/containerd.sock, mounted below); a partial `engines` block is rejected.
+    load_plugins: [container]
+    plugins:
+      - name: container
+        library_path: libcontainer.so
+        init_config:
+          label_max_len: 100
+          with_size: false
 
     watch_config_files: true
     time_format_iso_8601: true
-
-    # K3s containerd socket
-    container_engines:
-      cri:
-        enabled: true
-        sockets:
-          - /run/k3s/containerd/containerd.sock
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -151,8 +152,9 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       containers:
       - name: falco
-        # falco-no-driver: modern_ebpf only (no kernel module). Multi-arch includes arm64.
-        image: docker.io/falcosecurity/falco-no-driver:0.39.2
+        # modern_ebpf only (no kernel module); multi-arch includes arm64. The old falco-no-driver
+        # image stopped at 0.39.2 and fails scap_init on the 7.0 AWS kernel, so use the main image.
+        image: docker.io/falcosecurity/falco:0.45.2
         imagePullPolicy: IfNotPresent
         securityContext:
           privileged: true
@@ -166,6 +168,8 @@ spec:
           - -o
           - stdout_output.enabled=true
         env:
+        - name: SKIP_DRIVER_LOADER   # modern_ebpf is built in; do not try to build/load a driver
+          value: "1"
         - name: FALCO_K8S_API
           value: "https://kubernetes.default.svc"
         - name: FALCO_K8S_API_CERT
@@ -186,11 +190,10 @@ spec:
         - name: falco-rules-local
           mountPath: /etc/falco/falco_rules.local.yaml
           subPath: falco_rules.local.yaml
-        - name: k3s-containerd-sock
-          mountPath: /run/k3s/containerd/containerd.sock
-          readOnly: true
+        # The container plugin (Falco >= 0.40) probes sockets under /host/run/..., so mount the
+        # whole K3s run dir there. At /run/k3s it never finds containerd and events lack pod/ns.
         - name: k3s-run
-          mountPath: /run/k3s
+          mountPath: /host/run/k3s
           readOnly: true
         - name: proc-fs
           mountPath: /host/proc
@@ -223,9 +226,6 @@ spec:
         configMap:
           name: falco-rules-local
       # Mount whole /run/k3s — Socket type check fails on some K3s hosts
-      - name: k3s-containerd-sock
-        hostPath:
-          path: /run/k3s/containerd/containerd.sock
       - name: k3s-run
         hostPath:
           path: /run/k3s
