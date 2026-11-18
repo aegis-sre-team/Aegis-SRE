@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import asyncio
@@ -20,7 +21,9 @@ from src.guardrails.validator import GuardrailEngine
 from src.controller.executor import ActionExecutor
 from src.brain.notifications import EscalationNotifier
 from src.brain.remediation import token_matches
+from src.dashboard.chaos_client import ChaosClient, ChaosError
 from src.dashboard.live_state import LiveClusterState, resolve_data_source, sensor_startup_logs
+from src.db.escalations import list_open_escalations, resolve_escalation_record
 from src.guardrails.action_schema import GuardrailDecision, STATE_GUARDRAIL_APPROVED
 
 logger = logging.getLogger("aegis-dashboard-server")
@@ -108,6 +111,12 @@ live_state = LiveClusterState(
     token=os.getenv("GO_CONTROLLER_TOKEN") or None,
 )
 
+# Start/stop of the chaos scenarios goes through the Go controller (the only component that changes the cluster).
+chaos_client = ChaosClient(
+    controller_url=os.getenv("GO_CONTROLLER_URL", ""),
+    token=os.getenv("GO_CONTROLLER_TOKEN") or None,
+)
+
 
 def _check_dashboard_token(request: Request) -> None:
     """Optional shared secret for the endpoints that CHANGE things (chaos trigger, HITL actions).
@@ -170,6 +179,29 @@ def add_terminal_log(level: str, category: str, message: str):
         TERMINAL_LOGS.pop(0)
     return log_entry
 
+def _namespace_for_pod(pod_name: str, pods: List[dict]) -> Optional[str]:
+    """Namespace of a pod (or of its workload's live pods, since a restart replaces the pod name).
+
+    ``incidents`` has no namespace column, so a live escalation is matched to the cluster here. An
+    ambiguous or unknown pod gives None rather than a guess: the operator is then asked for it.
+    """
+    for p in pods:
+        if p.get("pod_name") == pod_name:
+            return p.get("namespace")
+    if pod_name.count("-") < 2:
+        return None
+    workload = pod_name.rsplit("-", 2)[0]  # <deployment>-<replicaset hash>-<suffix>
+    found = {p.get("namespace") for p in pods if str(p.get("pod_name", "")).startswith(workload + "-")}
+    return found.pop() if len(found) == 1 else None
+
+
+def current_escalations(source: str, pods: List[dict]) -> List[dict]:
+    """Live: the shared database (what the real brain recorded). Demo: the in-memory simulator dict."""
+    if source == "live":
+        return [dict(e, namespace=_namespace_for_pod(e["target_pod"], pods)) for e in list_open_escalations()]
+    return list(ESCALATED_INCIDENTS.values())
+
+
 def build_state() -> Dict[str, Any]:
     """Current dashboard state, from the live cluster when a controller answers, else clearly-labelled demo data."""
     source = current_data_source()
@@ -181,7 +213,7 @@ def build_state() -> Dict[str, Any]:
     else:
         pods = list(POD_TELEMETRY_STORE.values())
     quarantines = list(ACTIVE_QUARANTINES.values())
-    escalations = list(ESCALATED_INCIDENTS.values())
+    escalations = current_escalations(source, pods)
     if source == "live":
         healthy = sum(1 for p in pods if p.get("status") == "HEALTHY")
         health_score = round(100.0 * healthy / len(pods), 1) if pods else 0.0
@@ -308,7 +340,7 @@ async def trigger_chaos(req: ChaosTriggerRequest):
     if current_data_source() == "live":
         raise HTTPException(
             status_code=409,
-            detail="Chaos simulation is demo-only. In live mode inject chaos with kubectl (see k8s/PHASE6_VERIFY.md).",
+            detail="This simulator is demo-only. In live mode use /api/v1/chaos/scenarios to start real chaos scenarios.",
         )
     pod_name = req.pod_name if req.pod_name in POD_TELEMETRY_STORE else "aegis-storefront-prod-1"
     chaos_type = req.chaos_type.lower()
@@ -410,6 +442,102 @@ async def trigger_chaos(req: ChaosTriggerRequest):
 
     return JSONResponse(content=event_msg)
 
+SCENARIO_ID = re.compile(r"^[a-z0-9-]{1,32}$")
+
+
+class ChaosStartRequest(BaseModel):
+    ttl_minutes: Optional[int] = None  # None = the controller's default (30), which it also caps (120)
+
+
+def _require_live_chaos() -> None:
+    if current_data_source() != "live":
+        raise HTTPException(status_code=409, detail="Chaos controls need a live cluster. The demo simulator has its own page.")
+
+
+def _check_scenario_id(scenario_id: str) -> None:
+    # Validated here as well as in the controller, so nothing odd is ever forwarded.
+    if not SCENARIO_ID.match(scenario_id):
+        raise HTTPException(status_code=400, detail="invalid scenario id")
+
+
+def _chaos_failure(e: ChaosError) -> HTTPException:
+    """Controller answers that mean something to the operator keep their status; anything else is a 502."""
+    return HTTPException(status_code=e.status if e.status in (400, 403, 404) else 502, detail=e.message)
+
+
+def _audit_chaos(action: str, scenario_id: str, detail: str) -> None:
+    """One audit row per start/stop. Nothing was verified, so ``health_verified`` is an explicit SQL NULL:
+    a plain ``None`` makes SQLAlchemy apply the column's default of True and the row would claim otherwise."""
+    try:
+        from sqlalchemy import null
+        from src.db.database import SessionLocal, init_db
+        from src.db.models import AuditLogRecord
+        init_db()
+        with SessionLocal() as session:
+            session.add(AuditLogRecord(
+                target_pod=f"chaos:{scenario_id}", problem_type="CHAOS_CONTROL", executed_action=action,
+                execution_success=True, status_code="COMPLETED", details=detail, health_verified=null()))
+            session.commit()
+    except Exception as e:
+        logger.warning("could not audit %s %s: %s", action, scenario_id, e)
+
+
+@app.get("/api/v1/chaos/scenarios")
+async def list_chaos_scenarios():
+    _require_live_chaos()
+    try:
+        return {"scenarios": await asyncio.to_thread(chaos_client.list)}
+    except ChaosError as e:
+        raise _chaos_failure(e)
+
+
+@app.post("/api/v1/chaos/scenarios/{scenario_id}/start", dependencies=[Depends(_check_dashboard_token)])
+async def start_chaos_scenario(scenario_id: str, req: Optional[ChaosStartRequest] = None):
+    _require_live_chaos()
+    _check_scenario_id(scenario_id)
+    ttl = req.ttl_minutes if req else None
+    try:
+        result = await asyncio.to_thread(chaos_client.set, scenario_id, "on", ttl)
+    except ChaosError as e:
+        raise _chaos_failure(e)
+    note = f"for {ttl} minutes" if ttl is not None else "with the default time limit"
+    add_terminal_log("WARN", "CHAOS", f"Operator started chaos scenario '{scenario_id}' {note}.")
+    _audit_chaos("CHAOS_START", scenario_id, f"Operator started scenario '{scenario_id}' {note}.")
+    await ws_manager.broadcast({"event": "CHAOS_CHANGED", "scenario": scenario_id, "state": "on"})
+    return result
+
+
+@app.post("/api/v1/chaos/scenarios/{scenario_id}/stop", dependencies=[Depends(_check_dashboard_token)])
+async def stop_chaos_scenario(scenario_id: str):
+    _require_live_chaos()
+    _check_scenario_id(scenario_id)
+    try:
+        result = await asyncio.to_thread(chaos_client.set, scenario_id, "off")
+    except ChaosError as e:
+        raise _chaos_failure(e)
+    add_terminal_log("INFO", "CHAOS", f"Operator stopped chaos scenario '{scenario_id}'.")
+    _audit_chaos("CHAOS_STOP", scenario_id, f"Operator stopped scenario '{scenario_id}'.")
+    await ws_manager.broadcast({"event": "CHAOS_CHANGED", "scenario": scenario_id, "state": "off"})
+    return result
+
+
+@app.post("/api/v1/chaos/stop-all", dependencies=[Depends(_check_dashboard_token)])
+async def stop_all_chaos():
+    _require_live_chaos()
+    try:
+        scenarios = await asyncio.to_thread(chaos_client.list)
+        running = [s["id"] for s in scenarios if s.get("installed") and s.get("replicas", 0) > 0]
+        for sid in running:
+            await asyncio.to_thread(chaos_client.set, sid, "off")
+    except ChaosError as e:
+        raise _chaos_failure(e)
+    for sid in running:
+        _audit_chaos("CHAOS_STOP", sid, f"Operator stopped scenario '{sid}' (stop all).")
+    add_terminal_log("INFO", "CHAOS", f"Operator stopped all chaos scenarios ({len(running)} running).")
+    await ws_manager.broadcast({"event": "CHAOS_CHANGED", "scenario": "*", "state": "off"})
+    return {"stopped": running}
+
+
 HITL_EXECUTABLE_ACTIONS = {"RESTART_POD", "SCALE_DEPLOYMENT", "UNQUARANTINE_POD"}
 
 
@@ -466,6 +594,8 @@ async def resolve_escalation(req: ManualRemediationRequest):
 
     if req.incident_id in ESCALATED_INCIDENTS:
         del ESCALATED_INCIDENTS[req.incident_id]
+    # Live escalations live in the shared database; resolving one must outlast a dashboard restart.
+    await asyncio.to_thread(resolve_escalation_record, req.incident_id)
 
     # Broadcast updated state
     await ws_manager.broadcast({
@@ -475,7 +605,7 @@ async def resolve_escalation(req: ManualRemediationRequest):
         "action": action,
         "pods": list(POD_TELEMETRY_STORE.values()),
         "quarantines": list(ACTIVE_QUARANTINES.values()),
-        "escalations": list(ESCALATED_INCIDENTS.values())
+        "escalations": await asyncio.to_thread(current_escalations, current_data_source(), []),
     })
 
     return {"status": "SUCCESS", "message": f"Manual action '{action}' executed for '{target_pod}'", "execution": execution}
