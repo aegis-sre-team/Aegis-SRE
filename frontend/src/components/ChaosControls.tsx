@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Play, Square } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { ChaosScenario } from '../api/types'
-import { SCENARIO_INFO, SCENARIO_ORDER, scenarioState, timeLeft, type ScenarioKind, type ScenarioState } from '../lib/chaos'
+import { SCENARIO_INFO, SCENARIO_ORDER, scenarioState, timeLeft, visibleScenarios, type ScenarioKind, type ScenarioState } from '../lib/chaos'
 import { useAegis } from '../state/AegisProvider'
 import { useFeedback } from '../state/feedback'
 import { Badge, Banner, Empty, type Tone } from './bits'
@@ -58,7 +58,8 @@ export function ChaosControls() {
     }
   }
 
-  const byId = new Map((scenarios ?? []).map((s) => [s.id, s]))
+  const shown = visibleScenarios(scenarios, error)
+  const byId = new Map((shown ?? []).map((s) => [s.id, s]))
   const ordered = SCENARIO_ORDER.map((id) => byId.get(id)).filter((s): s is ChaosScenario => s !== undefined)
   const anyRunning = ordered.some((s) => scenarioState(s) === 'running' || scenarioState(s) === 'starting')
 
@@ -82,8 +83,8 @@ export function ChaosControls() {
           </button>
         </header>
 
-        {scenarios === null && !error ? (
-          <p className="muted small">Loading scenarios…</p>
+        {shown === null ? (
+          <p className="muted small">{error ? 'Scenario state is unknown until the controller answers again.' : 'Loading scenarios…'}</p>
         ) : ordered.length === 0 ? (
           <Empty title="No scenarios found">The controller did not report any chaos scenarios.</Empty>
         ) : (

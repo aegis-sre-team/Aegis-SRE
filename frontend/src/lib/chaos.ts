@@ -55,6 +55,14 @@ export function scenarioState(s: ChaosScenario): ScenarioState {
   return s.ready > 0 ? 'running' : 'starting'
 }
 
+/**
+ * What the cards may show. After a failed refresh the last answer is hidden rather than left on screen:
+ * a card that still says "Running" when the controller cannot be reached would be a lie.
+ */
+export function visibleScenarios(scenarios: ChaosScenario[] | null, error: string | null): ChaosScenario[] | null {
+  return error ? null : scenarios
+}
+
 /** "12 min left", "under 1 min left", or null when there is no usable future time. */
 export function timeLeft(expiresAt: string | undefined, now: number): string | null {
   if (!expiresAt) return null

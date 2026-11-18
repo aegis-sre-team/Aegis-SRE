@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChaosScenario } from '../api/types'
-import { SCENARIO_INFO, SCENARIO_ORDER, scenarioState, timeLeft } from './chaos'
+import { SCENARIO_INFO, SCENARIO_ORDER, scenarioState, timeLeft, visibleScenarios } from './chaos'
 
 const base: ChaosScenario = { id: 'cpu-spike', deployment: 'chaos-cpu-spike', installed: true, replicas: 0, ready: 0 }
 
@@ -16,6 +16,20 @@ describe('scenarioState', () => {
   })
   it('reports a ready pod as running', () => {
     expect(scenarioState({ ...base, replicas: 1, ready: 1 })).toBe('running')
+  })
+})
+
+describe('visibleScenarios', () => {
+  const running: ChaosScenario = { ...base, replicas: 1, ready: 1 }
+
+  it('shows the last answer while refreshes keep succeeding', () => {
+    expect(visibleScenarios([running], null)).toEqual([running])
+  })
+  it('hides the last known state once a refresh has failed, so a stale "Running" is never shown', () => {
+    expect(visibleScenarios([running], 'controller unreachable')).toBeNull()
+  })
+  it('shows nothing before the first answer', () => {
+    expect(visibleScenarios(null, null)).toBeNull()
   })
 })
 
