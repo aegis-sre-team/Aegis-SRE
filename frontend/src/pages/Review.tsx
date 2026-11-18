@@ -83,7 +83,7 @@ function Decision({ item, onBack, onDone }: { item: Escalation; onBack: () => vo
   const caged = snap?.quarantines.some((q) => q.pod_name === item.target_pod) ?? false
 
   const [choice, setChoice] = useState<Option['action'] | null>(null)
-  const [namespace, setNamespace] = useState(pod?.namespace ?? '')
+  const [namespace, setNamespace] = useState(item.namespace ?? pod?.namespace ?? '')
   const [notes, setNotes] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)

@@ -1193,6 +1193,35 @@ select {
   font-weight: 700;
 }
 
+/* Live chaos cards: a scenario with its own Start/Stop control (the demo .scenario is one big button). */
+.scenario-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 15px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.scenario-card.is-on {
+  border-color: var(--cobalt);
+  background: var(--cobalt-soft);
+}
+.scenario-card p {
+  margin: 0;
+}
+.scenario-card-top,
+.scenario-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.scenario-card-foot {
+  margin-top: 4px;
+}
+
 /* ---------- overlays ---------- */
 
 .backdrop {

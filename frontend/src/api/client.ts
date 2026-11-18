@@ -1,4 +1,4 @@
-import type { AuditRow, ChaosResult, ExecutionResult, Forensics, Incident, Snapshot, TerminalLog } from './types'
+import type { AuditRow, ChaosResult, ChaosScenario, ExecutionResult, Forensics, Incident, Snapshot, TerminalLog } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -64,4 +64,14 @@ export const api = {
     }),
   chaos: (body: { pod_name: string; chaos_type: string }) =>
     request<ChaosResult>('/api/v1/chaos/trigger', { method: 'POST', body: JSON.stringify(body) }),
+  // Live chaos scenarios (the controller starts and stops them; the dashboard relays).
+  chaosScenarios: () => request<{ scenarios: ChaosScenario[] }>('/api/v1/chaos/scenarios'),
+  chaosStart: (id: string, ttlMinutes?: number) =>
+    request<ChaosScenario>(`/api/v1/chaos/scenarios/${encodeURIComponent(id)}/start`, {
+      method: 'POST',
+      body: JSON.stringify(ttlMinutes ? { ttl_minutes: ttlMinutes } : {}),
+    }),
+  chaosStop: (id: string) =>
+    request<ChaosScenario>(`/api/v1/chaos/scenarios/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+  chaosStopAll: () => request<{ stopped: string[] }>('/api/v1/chaos/stop-all', { method: 'POST' }),
 }

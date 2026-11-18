@@ -7,6 +7,7 @@ import { useAegis } from '../state/AegisProvider'
 import { useFeedback } from '../state/feedback'
 import { Banner, Empty, PageHead } from '../components/bits'
 import { Chain } from '../components/Chain'
+import { ChaosControls } from '../components/ChaosControls'
 import { buildChain } from '../lib/pipeline'
 
 const SCENARIOS = [
@@ -66,10 +67,14 @@ export function Simulate() {
   if (snap?.data_source === 'live') {
     return (
       <>
-        <PageHead title="Simulate" />
-        <Banner tone="info" title="Simulation is only available with demo data">
-          Against a live cluster, inject failures with kubectl. The steps are in k8s/PHASE6_VERIFY.md.
+        <PageHead
+          title="Chaos controls"
+          sub="Start a real failure on the live cluster and watch Aegis handle it. Each one stops by itself after 30 minutes."
+        />
+        <Banner tone="info" title="These start real pods">
+          They run in the aegis-chaos namespace. Whether Aegis then acts for real or only rehearses depends on its dry-run switches.
         </Banner>
+        <ChaosControls />
       </>
     )
   }

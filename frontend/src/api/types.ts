@@ -41,6 +41,8 @@ export interface Escalation {
   forensics_file?: string
   loki_logs?: string
   timestamp: string
+  /** Live only: found from the cluster; null when the pod's workload is gone and the operator must say. */
+  namespace?: string | null
 }
 
 export interface TerminalLog {
@@ -130,8 +132,19 @@ export interface ChaosResult {
   execution: ExecutionResult
 }
 
+/** One chaos scenario on the live cluster, as reported by the controller (controller/chaos.go). */
+export interface ChaosScenario {
+  id: string
+  deployment: string
+  installed: boolean
+  replicas: number
+  ready: number
+  expires_at?: string
+}
+
 export type ServerEvent =
   | ({ event: 'INITIAL_STATE' | 'TELEMETRY_TICK'; terminal_logs?: TerminalLog[] } & Snapshot)
   | { event: 'PIPELINE_EVENT'; [k: string]: unknown }
   | { event: 'CHAOS_TRIGGERED'; [k: string]: unknown }
+  | { event: 'CHAOS_CHANGED'; [k: string]: unknown }
   | ({ event: 'ESCALATION_RESOLVED' } & Partial<Snapshot>)
