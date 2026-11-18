@@ -15,10 +15,13 @@ func isNotFound(err error) bool { return errors.Is(err, ErrNotFound) }
 // httpStatusFor maps a Reconcile error to an HTTP status code.
 func httpStatusFor(err error) int {
 	switch {
-	case errors.Is(err, ErrProtectedNamespace), errors.Is(err, ErrNamespaceNotAllowed):
+	case errors.Is(err, ErrProtectedNamespace), errors.Is(err, ErrNamespaceNotAllowed), errors.Is(err, ErrChaosDisabled):
 		return http.StatusForbidden
-	case errors.Is(err, ErrNamespaceRequired), errors.Is(err, ErrUnsupportedAction), errors.Is(err, ErrInvalidTarget), errors.Is(err, ErrInvalidReplicas):
+	case errors.Is(err, ErrNamespaceRequired), errors.Is(err, ErrUnsupportedAction), errors.Is(err, ErrInvalidTarget), errors.Is(err, ErrInvalidReplicas),
+		errors.Is(err, ErrUnknownScenario), errors.Is(err, ErrInvalidChaosState), errors.Is(err, ErrInvalidTTL):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrNoCluster):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, ErrNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, ErrNoWorkload):
@@ -85,6 +88,34 @@ func newServer(r *ActionReconciler, token string) http.Handler {
 			})
 		default:
 			writeJSON(w, http.StatusOK, res)
+		}
+	}))
+
+	// Chaos controls: start/stop the fixed failure-injection scenarios (see chaos.go). Off unless
+	// CHAOS_ENABLED=true; independent of DRY_RUN.
+	mux.HandleFunc("/api/v1/chaos", protect(func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case http.MethodGet:
+			list, err := r.ListChaos(req.Context())
+			if err != nil {
+				writeError(w, httpStatusFor(err), err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"scenarios": list})
+		case http.MethodPost:
+			var in ChaosRequest
+			if err := json.NewDecoder(io.LimitReader(req.Body, 1<<20)).Decode(&in); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON payload: "+err.Error())
+				return
+			}
+			res, err := r.SetChaos(req.Context(), in)
+			if err != nil {
+				writeError(w, httpStatusFor(err), err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, res)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "GET or POST required")
 		}
 	}))
 
